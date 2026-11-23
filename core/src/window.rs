@@ -10,6 +10,7 @@ mod level;
 mod mode;
 mod position;
 mod redraw_request;
+mod remember;
 mod user_attention;
 
 pub use direction::Direction;
@@ -20,6 +21,7 @@ pub use level::Level;
 pub use mode::Mode;
 pub use position::Position;
 pub use redraw_request::RedrawRequest;
+pub use remember::Remember;
 pub use screenshot::Screenshot;
 pub use settings::Settings;
 pub use user_attention::UserAttention;

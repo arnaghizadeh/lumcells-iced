@@ -39,11 +39,16 @@ impl Example {
 
     fn open(&mut self) -> Task<Message> {
         if let Some(id) = self.window {
-            return window::gain_focus(id);
+            // To the front on every system: restored if it was minimized,
+            // and on Wayland with the token the second start handed over
+            return window::present(id);
         }
 
         let (id, open) = window::open(window::Settings {
             size: iced::Size::new(420.0, 260.0),
+            // Where and as large as it was closed the last time (kept
+            // under the identifier of the single instance)
+            remember: Some(window::Remember::new("main")),
             ..window::Settings::default()
         });
 

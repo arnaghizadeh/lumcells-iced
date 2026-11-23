@@ -25,7 +25,7 @@ mod platform;
 mod platform;
 
 use crate::Size;
-use crate::window::{Icon, Level, Position};
+use crate::window::{Icon, Level, Position, Remember};
 
 pub use platform::PlatformSpecific;
 
@@ -98,6 +98,14 @@ pub struct Settings {
     ///
     /// By default this is enabled.
     pub exit_on_close_request: bool,
+
+    /// Whether the window is opened where, and as large as, the window
+    /// with the same key was when it was last closed: see [`Remember`].
+    /// What was remembered stands before [`size`](Self::size),
+    /// [`position`](Self::position) and [`maximized`](Self::maximized).
+    ///
+    /// By default nothing is remembered.
+    pub remember: Option<Remember>,
 }
 
 impl Default for Settings {
@@ -119,6 +127,7 @@ impl Default for Settings {
             level: Level::default(),
             icon: None,
             exit_on_close_request: true,
+            remember: None,
             platform_specific: PlatformSpecific::default(),
         }
     }

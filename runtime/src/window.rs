@@ -117,6 +117,19 @@ pub enum Action {
     /// - **Web / Wayland:** Unsupported.
     GainFocus(Id),
 
+    /// Bring the window to the front, wherever it is: shown if it was
+    /// hidden, restored if it was minimized, raised above the windows of
+    /// other programs and given the keyboard.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **Wayland:** done with the activation token of the latest start
+    ///   of the program that the single instance was handed, if there is
+    ///   one (`xdg-activation`); without one the compositor is asked to
+    ///   draw attention to the window, which is all it allows.
+    /// - **Web:** Unsupported.
+    Present(Id),
+
     /// Change the window [`Level`].
     SetLevel(Id, Level),
 
@@ -430,6 +443,33 @@ pub fn request_user_attention<T>(
 /// user experience.
 pub fn gain_focus<T>(id: Id) -> Task<T> {
     task::effect(crate::Action::Window(Action::GainFocus(id)))
+}
+
+/// Brings an existing window to the front on every system: what a program
+/// does when it is started a second time, or when its tray icon is
+/// clicked, while its window is open somewhere behind others, minimized,
+/// or hidden.
+///
+/// Where [`gain_focus`] does nothing for a minimized or hidden window,
+/// and nothing at all on Wayland, this shows the window, restores it, and
+/// then asks for the front in the way of the system:
+///
+/// - **X11:** `_NET_ACTIVE_WINDOW`, which window managers answer by
+///   raising the window and giving it the keyboard (some only mark it as
+///   wanting attention, by their rule against stealing the focus).
+/// - **Wayland:** a program may only come to the front with a token that
+///   proves a person asked for it. The second start of a program gets one
+///   from whatever started it (`XDG_ACTIVATION_TOKEN`) and the single
+///   instance of the shell hands it over: it is used here
+///   (`xdg_activation_v1.activate`). Without a token the compositor is
+///   asked to draw attention to the window.
+/// - **Windows, macOS:** the window is restored and made the active one
+///   (on macOS the application is activated).
+///
+/// Like [`gain_focus`] this takes the keyboard from whatever the person
+/// was doing: use it only as an answer to something the person did.
+pub fn present<T>(id: Id) -> Task<T> {
+    task::effect(crate::Action::Window(Action::Present(id)))
 }
 
 /// Changes the window [`Level`].

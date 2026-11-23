@@ -31,6 +31,8 @@ pub mod accessibility;
 pub mod clipboard;
 pub mod conversion;
 pub mod look;
+pub mod present;
+pub mod remember;
 pub mod single_instance;
 pub mod tray;
 
@@ -83,6 +85,12 @@ where
     let settings = program.settings();
     let shell_settings = program.shell();
     let window_settings = program.window();
+
+    // The windows that are remembered keep their files under this name
+    remember::name_program([
+        settings.id.as_deref(),
+        shell_settings.single_instance.as_deref(),
+    ]);
 
     // A second start hands its arguments to the first and ends here,
     // before anything of a window system is touched
@@ -305,6 +313,9 @@ where
                     | winit::event::WindowEvent::Moved(_)
             );
 
+            // A window that is remembered: where it is now
+            remember::window_event(window_id, &event);
+
             self.process_event(
                 event_loop,
                 Event::EventLoopAwakened(winit::event::Event::WindowEvent {
@@ -410,16 +421,50 @@ where
                                 let target =
                                     settings.platform_specific.target.clone();
 
+                                let monitor =
+                                    monitor.or(event_loop.primary_monitor());
+
+                                // A window that is remembered is opened
+                                // where and as large as it was left
+                                let mut settings = settings;
+                                let remembered = remember::open(
+                                    &mut settings,
+                                    scale_factor,
+                                    &monitor
+                                        .clone()
+                                        .into_iter()
+                                        .chain(event_loop.available_monitors())
+                                        .map(|monitor| remember::Monitor {
+                                            position: monitor.position().into(),
+                                            size: monitor.size().into(),
+                                            scale_factor: monitor
+                                                .scale_factor(),
+                                        })
+                                        .collect::<Vec<_>>(),
+                                );
+
                                 let window_attributes =
                                     conversion::window_attributes(
                                         settings,
                                         &title,
                                         scale_factor,
-                                        monitor
-                                            .or(event_loop.primary_monitor()),
+                                        monitor,
                                         self.id.clone(),
                                     )
                                     .with_visible(false);
+
+                                let window_attributes = match remembered
+                                    .as_ref()
+                                    .and_then(|remembered| remembered.position)
+                                {
+                                    Some((x, y)) => window_attributes
+                                        .with_position(
+                                            winit::dpi::PhysicalPosition::new(
+                                                x, y,
+                                            ),
+                                        ),
+                                    None => window_attributes,
+                                };
 
                                 // The activation token of the start that
                                 // asked for this window lets it come to the
@@ -536,6 +581,12 @@ where
                                     };
                                 }
 
+                                let window = Arc::new(window);
+
+                                if let Some(remembered) = remembered {
+                                    remember::track(&window, remembered);
+                                }
+
                                 self.process_event(
                                     event_loop,
                                     Event::WindowCreated {
@@ -545,7 +596,7 @@ where
                                             not(target_arch = "wasm32")
                                         ))]
                                         accessibility,
-                                        window: Arc::new(window),
+                                        window,
                                         exit_on_close_request,
                                         make_visible: visible,
                                         on_open,
@@ -553,6 +604,8 @@ where
                                 );
                             }
                             Control::Exit => {
+                                remember::flush_all();
+
                                 self.process_event(event_loop, Event::Exit);
                                 event_loop.exit();
                                 break;
@@ -1779,6 +1832,8 @@ fn run_action<'a, P, C>(
                 let _ = interfaces.remove(&id);
 
                 if let Some(window) = window_manager.remove(id) {
+                    remember::close(&window.raw);
+
                     if clipboard.window_id() == Some(window.raw.id()) {
                         *clipboard = window_manager
                             .first()
@@ -1982,6 +2037,14 @@ fn run_action<'a, P, C>(
             window::Action::GainFocus(id) => {
                 if let Some(window) = window_manager.get_mut(id) {
                     window.raw.focus_window();
+                }
+            }
+            window::Action::Present(id) => {
+                if let Some(window) = window_manager.get_mut(id) {
+                    present::present(
+                        &window.raw,
+                        single_instance::take_activation_token(),
+                    );
                 }
             }
             window::Action::SetLevel(id, level) => {

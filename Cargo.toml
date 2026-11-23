@@ -259,6 +259,10 @@ web-sys = "0.3.69"
 web-time = "1.1"
 wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl"] }
 window_clipboard = { version = "0.5", default-features = false }
+# The versions `winit` 0.30 uses: one request to the compositor that `winit` does not make (`window::present`)
+wayland-backend = { version = "0.3.10", default-features = false, features = ["client_system"] }
+wayland-client = "0.31.10"
+wayland-protocols = { version = "0.32.8", features = ["client", "staging"] }
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 
 [workspace.lints.rust]

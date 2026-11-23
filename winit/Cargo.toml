@@ -20,13 +20,14 @@ sysinfo = ["dep:sysinfo"]
 unconditional-rendering = []
 linux-theme-detection = ["dep:mundy", "mundy/async-io", "mundy/color-scheme"]
 # The tray icon: StatusNotifierItem over D-Bus on Linux, `tray-icon` on macOS and Windows
-tray = ["dep:zbus", "dep:tray-icon"]
+tray = ["dep:zbus", "dep:png", "dep:tray-icon"]
 # The accessibility tree, for screen readers: AccessKit
 accessibility = ["dep:accesskit", "dep:accesskit_winit", "dep:unicode-segmentation"]
 # One instance of the program per user: a second start hands its arguments to the first
 single-instance = ["dep:interprocess"]
 x11 = ["winit/x11", "window_clipboard/x11"]
-wayland = ["winit/wayland", "winit/wayland-dlopen", "winit/wayland-csd-adwaita", "window_clipboard/wayland"]
+# `window::present` on Wayland (xdg-activation for an existing window) talks to the compositor on the connection of `winit`, with the crates `winit` uses
+wayland = ["winit/wayland", "winit/wayland-dlopen", "winit/wayland-csd-adwaita", "window_clipboard/wayland", "dep:wayland-client", "dep:wayland-backend", "dep:wayland-protocols"]
 
 [dependencies]
 iced_debug.workspace = true
@@ -70,11 +71,21 @@ mundy.workspace = true
 mundy.optional = true
 zbus.workspace = true
 zbus.optional = true
+# The pictures of the items of the tray menu, as `com.canonical.dbusmenu` wants them
+png.workspace = true
+png.optional = true
+wayland-backend.workspace = true
+wayland-backend.optional = true
+wayland-client.workspace = true
+wayland-client.optional = true
+wayland-protocols.workspace = true
+wayland-protocols.optional = true
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tray-icon.workspace = true
 tray-icon.optional = true
 
 [dev-dependencies]
+png.workspace = true
 iced_futures.workspace = true
 iced_futures.features = ["thread-pool"]
