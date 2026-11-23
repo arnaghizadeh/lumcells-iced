@@ -599,6 +599,12 @@ pub mod mouse {
     };
 }
 
+pub mod subscription {
+    //! Listen to external events in your application.
+    pub use iced_futures::Subscription;
+    pub use iced_futures::subscription::{Inbox, Sender};
+}
+
 pub mod single_instance {
     //! Run one instance of a program per user:
     //! `iced::daemon(..).single_instance("com.example.app")`.

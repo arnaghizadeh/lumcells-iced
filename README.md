@@ -1,3 +1,30 @@
+# lumcells-iced
+
+The Lumcells fork of [iced](https://github.com/iced-rs/iced) (MIT), branch `lumcells`: the GUI
+toolkit Lumcells applications ship. It is upstream's `0.14` branch plus the patches listed under
+**Lumcells** in [CHANGELOG.md](CHANGELOG.md): keyboard focus on every control, a three-state check
+box, selectable text, a tray icon without GTK, single instance, the macOS activation policy, the
+start of an accessibility tree, and a few things for tests. Each patch has an example
+(`examples/focus_ring`, `tri_state_checkbox`, `selectable_text`, `tray`, `single_instance`) and
+tests; `.github/workflows/ci.yml` runs them on Linux, Windows and macOS.
+
+Use it from an application by pointing the `iced` crates at a commit of this branch:
+
+```toml
+[patch.crates-io]
+iced = { git = "https://github.com/arnaghizadeh/lumcells-iced", rev = "<commit>" }
+iced_core = { git = "https://github.com/arnaghizadeh/lumcells-iced", rev = "<commit>" }
+# ... and the other iced_* crates the application's lock file names
+```
+
+Not in the fork, on purpose: **file and folder dialogs**. Lumcells applications use
+[`rfd`](https://crates.io/crates/rfd) (with its XDG portal backend on Linux) for them, so that
+each application does not choose its own.
+
+What follows is upstream's README.
+
+---
+
 <div align="center">
 
 <img src="docs/logo.svg" width="140px" />

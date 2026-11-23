@@ -1,6 +1,8 @@
 //! Listen to external events in your application.
+mod inbox;
 mod tracker;
 
+pub use inbox::{Inbox, Sender};
 pub use tracker::Tracker;
 
 use crate::core::event;
