@@ -5142,6 +5142,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "selectable_text"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "iced_test",
+]
+
+[[package]]
 name = "self_cell"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

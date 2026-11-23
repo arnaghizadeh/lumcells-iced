@@ -1,3 +1,4 @@
 # The examples that the Lumcells patches add (one package per line); see fork-examples.sh.
 focus_ring
 tri_state_checkbox
+selectable_text

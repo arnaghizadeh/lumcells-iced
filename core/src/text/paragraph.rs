@@ -69,6 +69,23 @@ pub trait Paragraph: Sized + Default {
     /// Returns the distance to the given grapheme index in the [`Paragraph`].
     fn grapheme_position(&self, line: usize, index: usize) -> Option<Point>;
 
+    /// Returns the offset, in bytes of the content of the [`Paragraph`], of
+    /// the boundary between two characters that is nearest to the given
+    /// point; `None` if the [`Paragraph`] cannot tell.
+    ///
+    /// Unlike [`hit_test`](Self::hit_test), the offset counts from the start
+    /// of the whole content, whatever its lines.
+    fn hit_offset(&self, _point: Point) -> Option<usize> {
+        None
+    }
+
+    /// Returns the rectangles, one per visual line, that cover the content
+    /// between the two given offsets (in bytes, as returned by
+    /// [`hit_offset`](Self::hit_offset)).
+    fn selection_bounds(&self, _start: usize, _end: usize) -> Vec<Rectangle> {
+        Vec::new()
+    }
+
     /// Returns the minimum width that can fit the contents of the [`Paragraph`].
     fn min_width(&self) -> f32 {
         self.min_bounds().width

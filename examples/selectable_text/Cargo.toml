@@ -1,0 +1,13 @@
+[package]
+name = "selectable_text"
+version = "0.1.0"
+authors = ["Lumcells Engineering <engineering@lumcells.com>"]
+edition = "2024"
+publish = false
+
+[dependencies]
+iced.workspace = true
+iced.features = ["advanced"]
+
+[dev-dependencies]
+iced_test.workspace = true
