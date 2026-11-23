@@ -611,7 +611,14 @@ pub mod single_instance {
     //!
     //! A second start hands its arguments to the first and ends; the first
     //! receives them through [`listen`].
-    pub use crate::shell::single_instance::listen;
+    //!
+    //! A program that has to know which of the two it is before it does
+    //! anything else (take a lock, read its settings) calls [`start`]
+    //! itself at the top of `main`, and does not use the builder method.
+    pub use crate::shell::single_instance::{Start, listen};
+
+    #[cfg(feature = "single-instance")]
+    pub use crate::shell::single_instance::start;
 }
 
 pub mod tray {
