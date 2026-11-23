@@ -35,6 +35,7 @@ pub struct Simulator<
     size: Size,
     cursor: mouse::Cursor,
     messages: Vec<Message>,
+    clipboard: Clipboard,
 }
 
 impl<'a, Message, Theme, Renderer> Simulator<'a, Message, Theme, Renderer>
@@ -98,6 +99,7 @@ where
             size,
             cursor: mouse::Cursor::Unavailable,
             messages: Vec::new(),
+            clipboard: Clipboard::default(),
         }
     }
 
@@ -189,7 +191,7 @@ where
             &events,
             self.cursor,
             &mut self.renderer,
-            &mut clipboard::Null,
+            &mut self.clipboard,
             &mut self.messages,
         );
 
@@ -205,6 +207,18 @@ where
         }
 
         statuses
+    }
+
+    /// Returns what the widgets of the [`Simulator`] wrote last to the given
+    /// kind of clipboard, if anything.
+    ///
+    /// The clipboard of a [`Simulator`] is its own: nothing reaches the one
+    /// of the system.
+    pub fn clipboard(&self, kind: clipboard::Kind) -> Option<&str> {
+        match kind {
+            clipboard::Kind::Standard => self.clipboard.standard.as_deref(),
+            clipboard::Kind::Primary => self.clipboard.primary.as_deref(),
+        }
     }
 
     /// Runs the given widget [`Operation`](widget::Operation) in the
@@ -240,8 +254,19 @@ where
         }
     }
 
-    /// Draws and takes a [`Snapshot`] of the interface in the [`Simulator`].
+    /// Draws and takes a [`Snapshot`] of the interface in the [`Simulator`],
+    /// at a scale factor of 2.
     pub fn snapshot(&mut self, theme: &Theme) -> Result<Snapshot, Error> {
+        self.snapshot_with(theme, 2.0)
+    }
+
+    /// Draws and takes a [`Snapshot`] of the interface in the [`Simulator`]
+    /// at the given scale factor: `1.0` gives one pixel per logical pixel.
+    pub fn snapshot_with(
+        &mut self,
+        theme: &Theme,
+        scale_factor: f32,
+    ) -> Result<Snapshot, Error> {
         let base = theme.base();
 
         let _ = self.raw.update(
@@ -250,7 +275,7 @@ where
             ))],
             self.cursor,
             &mut self.renderer,
-            &mut clipboard::Null,
+            &mut self.clipboard,
             &mut self.messages,
         );
 
@@ -262,8 +287,6 @@ where
             },
             self.cursor,
         );
-
-        let scale_factor = 2.0;
 
         let physical_size = Size::new(
             (self.size.width * scale_factor).round() as u32,
@@ -294,6 +317,29 @@ where
     }
 }
 
+/// The clipboard of a [`Simulator`]: it remembers what was written to it.
+#[derive(Debug, Clone, Default)]
+struct Clipboard {
+    standard: Option<String>,
+    primary: Option<String>,
+}
+
+impl clipboard::Clipboard for Clipboard {
+    fn read(&self, kind: clipboard::Kind) -> Option<String> {
+        match kind {
+            clipboard::Kind::Standard => self.standard.clone(),
+            clipboard::Kind::Primary => self.primary.clone(),
+        }
+    }
+
+    fn write(&mut self, kind: clipboard::Kind, contents: String) {
+        match kind {
+            clipboard::Kind::Standard => self.standard = Some(contents),
+            clipboard::Kind::Primary => self.primary = Some(contents),
+        }
+    }
+}
+
 /// A frame of a user interface rendered by a [`Simulator`].
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -302,6 +348,27 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Returns the pixels of the [`Snapshot`], as RGBA bytes in rows from
+    /// the top, and its size in pixels.
+    ///
+    /// Nothing is written to disk: a test can look at the pixels itself, or
+    /// save them under a name and in a format of its own.
+    pub fn into_rgba(self) -> (Vec<u8>, Size<u32>) {
+        (self.screenshot.rgba.to_vec(), self.screenshot.size)
+    }
+
+    /// Returns the scale factor the [`Snapshot`] was taken at.
+    pub fn scale_factor(&self) -> f32 {
+        self.screenshot.scale_factor
+    }
+
+    /// Returns the name of the renderer that drew the [`Snapshot`]; it is
+    /// what [`matches_image`](Self::matches_image) and
+    /// [`matches_hash`](Self::matches_hash) add to the name of their files.
+    pub fn renderer(&self) -> &str {
+        &self.renderer
+    }
+
     /// Compares the [`Snapshot`] with the PNG image found in the given path, returning
     /// `true` if they are identical.
     ///
@@ -470,4 +537,58 @@ fn load_font(font: impl Into<Cow<'static, [u8]>>) -> Result<(), Error> {
         .load_font(font.into());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::core::widget::Text;
+
+    type Element<'a> =
+        crate::core::Element<'a, (), core::Theme, renderer::Renderer>;
+
+    fn hello<'a>() -> Element<'a> {
+        Text::new("Hello").into()
+    }
+
+    #[test]
+    fn a_snapshot_hands_out_its_pixels() -> Result<(), Error> {
+        let mut ui = Simulator::with_size(
+            Settings::default(),
+            Size::new(200.0, 100.0),
+            hello(),
+        );
+
+        let snapshot = ui.snapshot(&core::Theme::Light)?;
+        assert_eq!(snapshot.scale_factor(), 2.0);
+        assert!(!snapshot.renderer().is_empty());
+
+        let (rgba, size) = snapshot.into_rgba();
+        assert_eq!(size, Size::new(400, 200));
+        assert_eq!(rgba.len(), 400 * 200 * 4);
+
+        // White paper and something dark on it: the word
+        assert_eq!(&rgba[..4], &[255, 255, 255, 255]);
+        assert!(rgba.chunks(4).any(|pixel| pixel[0] < 64));
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_snapshot_can_be_taken_at_another_scale() -> Result<(), Error> {
+        let mut ui = Simulator::with_size(
+            Settings::default(),
+            Size::new(200.0, 100.0),
+            hello(),
+        );
+
+        let (rgba, size) =
+            ui.snapshot_with(&core::Theme::Light, 1.0)?.into_rgba();
+
+        assert_eq!(size, Size::new(200, 100));
+        assert_eq!(rgba.len(), 200 * 100 * 4);
+
+        Ok(())
+    }
 }
