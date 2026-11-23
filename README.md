@@ -3,12 +3,14 @@
 The Lumcells fork of [iced](https://github.com/iced-rs/iced) (MIT), branch `lumcells`: the GUI
 toolkit Lumcells applications ship. It is upstream's `0.14` branch plus the patches listed under
 **Lumcells** in [CHANGELOG.md](CHANGELOG.md): keyboard focus on every control, a three-state check
-box, selectable text, a tray icon without GTK, single instance, the macOS activation policy, the
-start of an accessibility tree (with names on widgets, and following scrolling), a terminal
-widget (feature `terminal`), what a program of the menu bar needs on macOS and of the tray on
-Windows, and a few things for tests. Each patch has an example (`examples/focus_ring`,
-`tri_state_checkbox`, `selectable_text`, `tray`, `single_instance`, `terminal`,
-`accessible_names`) and tests; `.github/workflows/ci.yml` runs them on Linux, Windows and macOS.
+box, selectable text (also rich text and Markdown, and over several texts), a tray icon without
+GTK (with submenus, and a signal where there is no tray), single instance, a window that
+remembers its place and one that is brought to the front, the macOS activation policy, an
+accessibility tree (names, scrolling, stable identifiers, carets, open lists, status lines), a
+focus trap for dialogs, a terminal widget (feature `terminal`), what a program of the menu bar
+needs on macOS and of the tray on Windows, and a few things for tests. Each patch has an example
+(`examples/focus_ring`, `tri_state_checkbox`, `selectable_text`, `tray`, `single_instance`,
+`terminal`, `accessible_names`, `screen_reader`) and tests; `.github/workflows/ci.yml` runs them on Linux, Windows and macOS.
 
 Test the workspace (`cargo test --workspace`), or the examples with
 `.github/scripts/fork-examples.sh`. A crate tested alone may fail tests that pass in the

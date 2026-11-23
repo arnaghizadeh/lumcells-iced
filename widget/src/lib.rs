@@ -15,6 +15,7 @@ mod focus_trap;
 mod mouse_area;
 mod pin;
 mod responsive;
+mod selection_area;
 mod stack;
 mod themer;
 
@@ -90,6 +91,8 @@ pub use row::Row;
 pub use rule::Rule;
 #[doc(no_inline)]
 pub use scrollable::Scrollable;
+#[doc(no_inline)]
+pub use selection_area::SelectionArea;
 #[doc(no_inline)]
 pub use sensor::Sensor;
 #[doc(no_inline)]

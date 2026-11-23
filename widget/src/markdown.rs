@@ -1051,6 +1051,9 @@ pub struct Settings {
     pub spacing: Pixels,
     /// The styling of the Markdown.
     pub style: Style,
+    /// Whether the text can be selected and copied; see
+    /// [`Settings::selectable`].
+    pub selectable: bool,
 }
 
 impl Settings {
@@ -1081,7 +1084,22 @@ impl Settings {
             code_size: text_size * 0.75,
             spacing: text_size * 0.875,
             style: style.into(),
+            selectable: false,
         }
+    }
+
+    /// Sets whether the text of the Markdown can be selected with the
+    /// pointer and the keyboard and copied: every heading, paragraph, list
+    /// item and line of code is a selectable
+    /// [`rich_text`](crate::rich_text), and [`view`] puts them in one
+    /// [`SelectionArea`](crate::SelectionArea), so that a selection goes
+    /// from one block to the next. What is copied is the text as it is
+    /// shown, without the marks of Markdown. A link is still clicked.
+    ///
+    /// By default, it cannot.
+    pub fn selectable(mut self, selectable: bool) -> Self {
+        self.selectable = selectable;
+        self
     }
 }
 
@@ -1227,7 +1245,13 @@ where
         .enumerate()
         .map(|(i, item_)| item(viewer, settings, item_, i));
 
-    Element::new(column(blocks).spacing(settings.spacing))
+    let blocks = column(blocks).spacing(settings.spacing);
+
+    if settings.selectable {
+        Element::new(crate::SelectionArea::new(blocks))
+    } else {
+        Element::new(blocks)
+    }
 }
 
 /// Displays an [`Item`] using the given [`Viewer`].
@@ -1296,6 +1320,7 @@ where
     container(
         rich_text(text.spans(settings.style))
             .on_link_click(on_link_click)
+            .selectable(settings.selectable)
             .size(match level {
                 pulldown_cmark::HeadingLevel::H1 => h1_size,
                 pulldown_cmark::HeadingLevel::H2 => h2_size,
@@ -1327,6 +1352,7 @@ where
     rich_text(text.spans(settings.style))
         .size(settings.text_size)
         .on_link_click(on_link_click)
+        .selectable(settings.selectable)
         .into()
 }
 
@@ -1430,6 +1456,7 @@ where
             container(column(lines.iter().map(|line| {
                 rich_text(line.spans(settings.style))
                     .on_link_click(on_link_click.clone())
+                    .selectable(settings.selectable)
                     .font(settings.style.code_block_font)
                     .size(settings.code_size)
                     .into()

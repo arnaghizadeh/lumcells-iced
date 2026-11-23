@@ -3,6 +3,8 @@ use crate::core::layout;
 use crate::core::mouse;
 use crate::core::renderer;
 use crate::core::text::{Paragraph, Span};
+use crate::core::widget::Operation;
+use crate::core::widget::text::Selection;
 use crate::core::widget::text::{
     self, Alignment, Catalog, LineHeight, Shaping, Style, StyleFn, Wrapping,
 };
@@ -36,6 +38,8 @@ pub struct Rich<
     class: Theme::Class<'a>,
     hovered_link: Option<usize>,
     on_link_click: Option<Box<dyn Fn(Link) -> Message + 'a>>,
+    selectable: bool,
+    selection_color: Option<Color>,
 }
 
 impl<'a, Link, Message, Theme, Renderer>
@@ -61,7 +65,27 @@ where
             class: Theme::default(),
             hovered_link: None,
             on_link_click: None,
+            selectable: false,
+            selection_color: None,
         }
+    }
+
+    /// Sets whether the [`Rich`] text can be selected with the pointer and
+    /// the keyboard and copied, as a selectable
+    /// [`Text`](crate::core::widget::Text) can; what is copied is the text
+    /// of its spans without their styles. A link is still clicked.
+    ///
+    /// By default, it cannot.
+    pub fn selectable(mut self, selectable: bool) -> Self {
+        self.selectable = selectable;
+        self
+    }
+
+    /// Sets the [`Color`] drawn behind the selected part of a selectable
+    /// [`Rich`] text.
+    pub fn selection_color(mut self, color: impl Into<Color>) -> Self {
+        self.selection_color = Some(color.into());
+        self
     }
 
     /// Creates a new [`Rich`] text with the given text spans.
@@ -220,6 +244,48 @@ where
         })
     }
 
+    fn children(&self) -> Vec<Tree> {
+        if self.selectable {
+            vec![Selection::tree()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        Selection::diff(tree, self.selectable);
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        let content = content_of(self.spans.as_ref().as_ref());
+        let bounds = layout.bounds();
+
+        if self.selectable
+            && let Some(selection) = tree.children.first_mut()
+        {
+            let state = tree
+                .state
+                .downcast_ref::<State<Link, Renderer::Paragraph>>();
+
+            selection.state.downcast_mut::<Selection>().operate(
+                operation,
+                &state.paragraph,
+                &content,
+                bounds,
+                bounds.position(),
+            );
+        }
+
+        // Its words, for a test and for assistive technology
+        operation.text(None, bounds, &content);
+    }
+
     fn size(&self) -> Size<Length> {
         Size {
             width: self.width,
@@ -269,6 +335,22 @@ where
             .downcast_ref::<State<Link, Renderer::Paragraph>>();
 
         let style = theme.style(&self.class);
+
+        if self.selectable
+            && let Some(selection) = tree.children.first()
+        {
+            let color = self.selection_color.unwrap_or_else(|| {
+                style.color.unwrap_or(defaults.text_color).scale_alpha(0.25)
+            });
+
+            selection.state.downcast_ref::<Selection>().draw(
+                renderer,
+                &state.paragraph,
+                layout.position(),
+                color,
+                viewport,
+            );
+        }
 
         for (index, span) in self.spans.as_ref().as_ref().iter().enumerate() {
             let is_hovered_link = self.on_link_click.is_some()
@@ -379,10 +461,30 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
+        clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
+        if self.selectable
+            && let Some(selection) = tree.children.first_mut()
+        {
+            let state = tree
+                .state
+                .downcast_ref::<State<Link, Renderer::Paragraph>>();
+            let bounds = layout.bounds();
+
+            selection.state.downcast_mut::<Selection>().update(
+                event,
+                &state.paragraph,
+                &content_of(self.spans.as_ref().as_ref()),
+                bounds,
+                bounds.position(),
+                cursor,
+                clipboard,
+                shell,
+            );
+        }
+
         let Some(on_link_clicked) = &self.on_link_click else {
             return;
         };
@@ -450,13 +552,15 @@ where
     fn mouse_interaction(
         &self,
         _tree: &Tree,
-        _layout: Layout<'_>,
-        _cursor: mouse::Cursor,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
         if self.hovered_link.is_some() {
             mouse::Interaction::Pointer
+        } else if self.selectable && cursor.is_over(layout.bounds()) {
+            mouse::Interaction::Text
         } else {
             mouse::Interaction::None
         }
@@ -560,4 +664,10 @@ where
     ) -> Element<'a, Message, Theme, Renderer> {
         Element::new(text)
     }
+}
+
+/// The text of the spans, one after the other: what a paragraph made of
+/// them holds.
+fn content_of<Link, Font>(spans: &[Span<'_, Link, Font>]) -> String {
+    spans.iter().map(|span| span.text.as_ref()).collect()
 }

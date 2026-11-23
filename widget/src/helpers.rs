@@ -2043,6 +2043,19 @@ where
     crate::FocusTrap::new(content)
 }
 
+/// Creates a new [`SelectionArea`]: a selection goes from one selectable
+/// text inside the given content to the next, and is copied as one.
+///
+/// [`SelectionArea`]: crate::SelectionArea
+pub fn selection_area<'a, Message, Theme, Renderer>(
+    content: impl Into<Element<'a, Message, Theme, Renderer>>,
+) -> crate::SelectionArea<'a, Message, Theme, Renderer>
+where
+    Renderer: core::Renderer,
+{
+    crate::SelectionArea::new(content)
+}
+
 /// A widget that applies any `Theme` to its contents.
 pub fn themer<'a, Message, Theme, Renderer>(
     theme: Option<Theme>,

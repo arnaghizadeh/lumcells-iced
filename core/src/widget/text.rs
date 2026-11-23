@@ -21,21 +21,22 @@
 //! }
 //! ```
 use crate::alignment;
-use crate::clipboard::{self, Clipboard};
-use crate::keyboard;
+use crate::clipboard::Clipboard;
 use crate::layout;
 use crate::mouse;
 use crate::renderer;
 use crate::text;
 use crate::text::paragraph::{self, Paragraph};
-use crate::touch;
 use crate::widget::operation::accessible::{self, Accessible};
 use crate::widget::tree::{self, Tree};
 use crate::{
-    Color, Element, Event, Layout, Length, Pixels, Point, Rectangle, Shell,
-    Size, Theme, Vector, Widget,
+    Color, Element, Event, Layout, Length, Pixels, Rectangle, Shell, Size,
+    Theme, Widget,
 };
 
+pub mod selection;
+
+pub use selection::Selection;
 pub use text::{Alignment, LineHeight, Shaping, Wrapping};
 
 pub use crate::widget::operation::accessible::Live;
@@ -267,13 +268,7 @@ where
     }
 
     fn diff(&self, tree: &mut Tree) {
-        if !self.selectable {
-            tree.children.clear();
-        } else if tree.children.len() != 1
-            || tree.children[0].tag != tree::Tag::of::<Selection>()
-        {
-            tree.children = vec![Selection::tree()];
-        }
+        Selection::diff(tree, self.selectable);
     }
 
     fn update(
@@ -297,7 +292,6 @@ where
 
         let paragraph = tree.state.downcast_ref::<State<Renderer::Paragraph>>();
         let selection = selection.state.downcast_mut::<Selection>();
-        let content: &str = &self.fragment;
         let bounds = layout.bounds();
 
         // Where the paragraph is drawn
@@ -307,111 +301,16 @@ where
             paragraph.align_y(),
         );
 
-        let offset_at = |position: Point| {
-            paragraph
-                .raw()
-                .hit_offset(position - Vector::new(origin.x, origin.y))
-                .map(|offset| floor_char_boundary(content, offset))
-        };
-
-        match event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            | Event::Touch(touch::Event::FingerPressed { .. }) => {
-                let before = selection.range();
-
-                if let Some(position) = cursor.position_over(bounds)
-                    && let Some(offset) = offset_at(position)
-                {
-                    let click = mouse::Click::new(
-                        position,
-                        mouse::Button::Left,
-                        selection.last_click,
-                    );
-
-                    match click.kind() {
-                        mouse::click::Kind::Single => {
-                            selection.anchor = offset;
-                            selection.head = offset;
-                            selection.is_dragging = true;
-                        }
-                        mouse::click::Kind::Double => {
-                            let (start, end) = word_around(content, offset);
-
-                            selection.anchor = start;
-                            selection.head = end;
-                            selection.is_dragging = false;
-                        }
-                        mouse::click::Kind::Triple => {
-                            selection.anchor = 0;
-                            selection.head = content.len();
-                            selection.is_dragging = false;
-                        }
-                    }
-
-                    selection.last_click = Some(click);
-                } else {
-                    // A click elsewhere drops the selection
-                    selection.anchor = 0;
-                    selection.head = 0;
-                    selection.is_dragging = false;
-                    selection.last_click = None;
-                }
-
-                if selection.range() != before {
-                    if !selection.is_dragging
-                        && let Some(selected) = selection.selected(content)
-                    {
-                        clipboard.write(
-                            clipboard::Kind::Primary,
-                            selected.to_owned(),
-                        );
-                    }
-
-                    shell.request_redraw();
-                }
-            }
-            Event::Mouse(mouse::Event::CursorMoved { .. })
-            | Event::Touch(touch::Event::FingerMoved { .. })
-                if selection.is_dragging =>
-            {
-                if let Some(position) = cursor.position()
-                    && let Some(offset) = offset_at(position)
-                    && offset != selection.head
-                {
-                    selection.head = offset;
-                    shell.request_redraw();
-                }
-            }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-            | Event::Touch(
-                touch::Event::FingerLifted { .. }
-                | touch::Event::FingerLost { .. },
-            ) if selection.is_dragging => {
-                selection.is_dragging = false;
-
-                if let Some(selected) = selection.selected(content) {
-                    clipboard
-                        .write(clipboard::Kind::Primary, selected.to_owned());
-                }
-            }
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key,
-                physical_key,
-                modifiers,
-                ..
-            }) if modifiers.command()
-                && !shell.is_event_captured()
-                && key.to_latin(*physical_key) == Some('c') =>
-            {
-                if let Some(selected) = selection.selected(content) {
-                    clipboard
-                        .write(clipboard::Kind::Standard, selected.to_owned());
-
-                    shell.capture_event();
-                }
-            }
-            _ => {}
-        }
+        selection.update(
+            event,
+            paragraph.raw(),
+            &self.fragment,
+            bounds,
+            origin,
+            cursor,
+            clipboard,
+            shell,
+        );
     }
 
     fn mouse_interaction(
@@ -466,8 +365,6 @@ where
 
         if self.selectable
             && let Some(selection) = tree.children.first()
-            && let Some((start, end)) =
-                selection.state.downcast_ref::<Selection>().range()
         {
             let bounds = layout.bounds();
             let paragraph = state.raw();
@@ -482,19 +379,10 @@ where
                 style.color.unwrap_or(defaults.text_color).scale_alpha(0.25)
             });
 
-            for line in paragraph.selection_bounds(start, end) {
-                let line = line + Vector::new(origin.x, origin.y);
-
-                if let Some(visible) = line.intersection(viewport) {
-                    renderer.fill_quad(
-                        renderer::Quad {
-                            bounds: visible,
-                            ..renderer::Quad::default()
-                        },
-                        color,
-                    );
-                }
-            }
+            selection
+                .state
+                .downcast_ref::<Selection>()
+                .draw(renderer, paragraph, origin, color, viewport);
         }
 
         draw(
@@ -514,16 +402,19 @@ where
         _renderer: &Renderer,
         operation: &mut dyn super::Operation,
     ) {
+        let Tree {
+            state, children, ..
+        } = tree;
+
         // What is selected in it, if anything is
-        let selection = tree
-            .children
+        let selection = children
             .first()
             .filter(|_| self.selectable)
             .map(|selection| selection.state.downcast_ref::<Selection>())
-            .filter(|selection| selection.anchor != selection.head)
+            .filter(|selection| selection.range().is_some())
             .map(|selection| accessible::Selection {
-                anchor: selection.anchor.min(self.fragment.len()),
-                focus: selection.head.min(self.fragment.len()),
+                anchor: selection.anchor().min(self.fragment.len()),
+                focus: selection.head().min(self.fragment.len()),
             });
 
         // A text that has more to tell than its words describes itself
@@ -538,6 +429,28 @@ where
             );
         }
 
+        // A container that selects over several texts asks here
+        if self.selectable
+            && let Some(selection) = children.first_mut()
+        {
+            let paragraph = state.downcast_ref::<State<Renderer::Paragraph>>();
+            let bounds = layout.bounds();
+
+            let origin = bounds.anchor(
+                paragraph.min_bounds(),
+                paragraph.align_x(),
+                paragraph.align_y(),
+            );
+
+            selection.state.downcast_mut::<Selection>().operate(
+                operation,
+                paragraph.raw(),
+                &self.fragment,
+                bounds,
+                origin,
+            );
+        }
+
         operation.text(None, layout.bounds(), &self.fragment);
     }
 }
@@ -546,84 +459,6 @@ where
 ///
 /// Check out the methods of the [`Text`] widget
 /// to learn more about each field.
-/// The selection of a selectable [`Text`]: two offsets in bytes of its
-/// content, where the drag began and where it is now.
-#[derive(Debug, Clone, Copy, Default)]
-struct Selection {
-    anchor: usize,
-    head: usize,
-    is_dragging: bool,
-    last_click: Option<mouse::Click>,
-}
-
-impl Selection {
-    fn tree() -> Tree {
-        Tree {
-            tag: tree::Tag::of::<Selection>(),
-            state: tree::State::new(Selection::default()),
-            children: Vec::new(),
-        }
-    }
-
-    /// The selected range, in order; `None` when nothing is selected.
-    fn range(&self) -> Option<(usize, usize)> {
-        let start = self.anchor.min(self.head);
-        let end = self.anchor.max(self.head);
-
-        (start < end).then_some((start, end))
-    }
-
-    /// The selected part of the given content, if any. A selection that no
-    /// longer fits the content (it changed since) selects nothing.
-    fn selected<'a>(&self, content: &'a str) -> Option<&'a str> {
-        let (start, end) = self.range()?;
-
-        content.get(start..end.min(content.len()))
-    }
-}
-
-/// The nearest boundary between two characters at or before the offset.
-fn floor_char_boundary(content: &str, offset: usize) -> usize {
-    let mut offset = offset.min(content.len());
-
-    while !content.is_char_boundary(offset) {
-        offset -= 1;
-    }
-
-    offset
-}
-
-/// The word (a run of letters, digits and `_`), or else the single character,
-/// around the given offset of the content.
-fn word_around(content: &str, offset: usize) -> (usize, usize) {
-    let is_word = |c: char| c.is_alphanumeric() || c == '_';
-
-    let after = content[offset..].chars().next();
-    let before = content[..offset].chars().next_back();
-
-    match (before, after) {
-        (_, Some(c)) if is_word(c) => {}
-        (Some(c), _) if is_word(c) => {}
-        (_, Some(c)) => return (offset, offset + c.len_utf8()),
-        (Some(c), None) => return (offset - c.len_utf8(), offset),
-        (None, None) => return (offset, offset),
-    }
-
-    let start = content[..offset]
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| is_word(*c))
-        .last()
-        .map_or(offset, |(i, _)| i);
-
-    let end = content[offset..]
-        .char_indices()
-        .find(|(_, c)| !is_word(*c))
-        .map_or(content.len(), |(i, _)| offset + i);
-
-    (start, end)
-}
-
 #[derive(Debug, Clone, Copy)]
 #[allow(missing_docs)]
 pub struct Format<Font> {
@@ -828,61 +663,5 @@ pub fn warning(theme: &Theme) -> Style {
 pub fn danger(theme: &Theme) -> Style {
     Style {
         color: Some(theme.palette().danger),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_word_is_found_around_an_offset() {
-        let content = "The server_1 cannot, alas, be reached";
-
-        assert_eq!(word_around(content, 0), (0, 3));
-        assert_eq!(word_around(content, 2), (0, 3));
-        // At the end of a word, the word before
-        assert_eq!(word_around(content, 3), (0, 3));
-        assert_eq!(&content[4..12], "server_1");
-        assert_eq!(word_around(content, 7), (4, 12));
-        // On a character that is not of a word, with none before: itself
-        assert_eq!(word_around(", ,", 0), (0, 1));
-        assert_eq!(word_around(content, content.len()), (30, 37));
-        assert_eq!(word_around("", 0), (0, 0));
-    }
-
-    #[test]
-    fn a_word_is_made_of_whole_characters() {
-        let content = "naïve café";
-
-        assert_eq!(word_around(content, 1), (0, 6));
-        assert_eq!(&content[7..], "café");
-        assert_eq!(word_around(content, 8), (7, content.len()));
-    }
-
-    #[test]
-    fn an_offset_is_moved_back_to_a_character() {
-        let content = "aé";
-
-        assert_eq!(floor_char_boundary(content, 2), 1);
-        assert_eq!(floor_char_boundary(content, 3), 3);
-        assert_eq!(floor_char_boundary(content, 99), 3);
-    }
-
-    #[test]
-    fn a_selection_that_no_longer_fits_selects_nothing_wrong() {
-        let selection = Selection {
-            anchor: 9,
-            head: 2,
-            ..Selection::default()
-        };
-
-        assert_eq!(selection.range(), Some((2, 9)));
-        assert_eq!(selection.selected("0123456789"), Some("2345678"));
-        // The content became shorter: what is left of the range
-        assert_eq!(selection.selected("0123"), Some("23"));
-        // The range would cut a character in two: nothing
-        assert_eq!(selection.selected("0é"), None);
-        assert_eq!(Selection::default().selected("0123"), None);
     }
 }
