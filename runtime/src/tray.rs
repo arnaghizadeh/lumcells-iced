@@ -16,6 +16,17 @@ pub struct Settings {
     /// The picture.
     pub icon: Icon,
 
+    /// What the icon is called: the name of the program, which stays the
+    /// same while the [`tooltip`](Self::tooltip) tells a status. May be
+    /// empty; the icon is then called by its tooltip.
+    ///
+    /// A screen reader says it for the icon (the accessibility title of
+    /// the menu bar item on macOS, where the tooltip is only the help
+    /// text). Windows keeps the first tooltip of an icon as its name, in
+    /// its settings and for a screen reader: the icon is first shown with
+    /// this as its tooltip. On Linux it is the title of the item.
+    pub name: String,
+
     /// What is shown when the pointer rests on the icon. May be empty.
     ///
     /// Some Linux desktops do not show a tooltip for tray icons; put what
@@ -32,8 +43,25 @@ impl Settings {
     pub fn new(icon: Icon) -> Self {
         Self {
             icon,
+            name: String::new(),
             tooltip: String::new(),
             menu: Menu::default(),
+        }
+    }
+
+    /// Sets what the icon is called; see [`name`](Self#structfield.name).
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// What the desktop is told the icon is called: its name, or its
+    /// tooltip when it has none.
+    pub fn title(&self) -> &str {
+        if self.name.is_empty() {
+            &self.tooltip
+        } else {
+            &self.name
         }
     }
 
@@ -281,6 +309,20 @@ mod tests {
             error.to_string(),
             "a tray icon of 1x1 pixels needs 4 bytes of RGBA, not 3"
         );
+    }
+
+    #[test]
+    fn an_icon_is_called_by_its_name_or_else_by_its_tooltip() {
+        let icon = Icon::from_rgba(vec![0; 4], 1, 1).unwrap();
+
+        let plain = Settings::new(icon.clone()).tooltip("Drive: Paused");
+        assert_eq!(plain.title(), "Drive: Paused");
+
+        let named = plain.name("Drive");
+        assert_eq!(named.title(), "Drive");
+        assert_eq!(named.tooltip, "Drive: Paused");
+
+        assert_eq!(Settings::new(icon).title(), "");
     }
 
     #[test]

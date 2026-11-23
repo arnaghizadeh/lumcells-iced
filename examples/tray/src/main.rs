@@ -42,6 +42,9 @@ impl Counter {
         };
 
         tray::Settings::new(icon(self.paused))
+            // What a screen reader (and the settings of Windows) call the
+            // icon: the same whatever the status is
+            .name("Tray example")
             .tooltip(format!("Tray example: {status}"))
             .menu([
                 // Not every desktop shows a tooltip: the status is the
@@ -193,6 +196,7 @@ mod tests {
 
         let settings = counter.tray();
         assert_eq!(settings.tooltip, "Tray example: 2 seconds");
+        assert_eq!(settings.title(), "Tray example");
         assert_eq!(
             labels(&settings),
             ["2 seconds", "-", "Open", "Pause", "-", "Quit"]

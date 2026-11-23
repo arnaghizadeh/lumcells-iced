@@ -237,11 +237,12 @@ async fn apply(
     state: &State,
     settings: Settings,
 ) -> zbus::Result<()> {
-    let (icon, tooltip, menu) = {
+    let (icon, tooltip, title, menu) = {
         let mut shared = lock(state);
 
         let icon = shared.settings.icon != settings.icon;
         let tooltip = shared.settings.tooltip != settings.tooltip;
+        let title = shared.settings.title() != settings.title();
         let menu = MenuChange::between(&shared.settings.menu, &settings.menu);
 
         if let MenuChange::Layout = menu {
@@ -251,12 +252,12 @@ async fn apply(
         let revision = shared.revision;
         shared.settings = settings;
 
-        (icon, tooltip, (menu, revision))
+        (icon, tooltip, title, (menu, revision))
     };
 
     let server = connection.object_server();
 
-    if icon || tooltip {
+    if icon || tooltip || title {
         let item = server.interface::<_, StatusNotifierItem>(ITEM_PATH).await?;
         let emitter = item.signal_emitter();
 
@@ -266,6 +267,9 @@ async fn apply(
 
         if tooltip {
             StatusNotifierItem::new_tool_tip(emitter).await?;
+        }
+
+        if title {
             StatusNotifierItem::new_title(emitter).await?;
         }
     }
@@ -396,7 +400,7 @@ impl StatusNotifierItem {
 
     #[zbus(property)]
     fn title(&self) -> String {
-        lock(&self.state).settings.tooltip.clone()
+        lock(&self.state).settings.title().to_owned()
     }
 
     #[zbus(property)]
@@ -825,13 +829,16 @@ mod tests {
     }
 
     fn settings() -> Settings {
-        Settings::new(icon(1)).tooltip("Up to date").menu([
-            Item::label("Up to date"),
-            Item::separator(),
-            Item::button("open", "Open the _folder"),
-            Item::check("pause", "Pause", false),
-            Item::button("quit", "Quit").enabled(false),
-        ])
+        Settings::new(icon(1))
+            .name("Example")
+            .tooltip("Up to date")
+            .menu([
+                Item::label("Up to date"),
+                Item::separator(),
+                Item::button("open", "Open the _folder"),
+                Item::check("pause", "Pause", false),
+                Item::button("quit", "Quit").enabled(false),
+            ])
     }
 
     async fn host(address: &str) -> zbus::Connection {
@@ -978,6 +985,18 @@ mod tests {
                 .await;
                 assert_eq!(tooltip.2, "Up to date");
 
+                // The item is called by the name of the program, not by
+                // its status
+                let title: String = property(
+                    &host,
+                    &item,
+                    ITEM_PATH,
+                    "org.kde.StatusNotifierItem",
+                    "Title",
+                )
+                .await;
+                assert_eq!(title, "Example");
+
                 let menu: zbus::zvariant::OwnedObjectPath = property(
                     &host,
                     &item,
@@ -1058,7 +1077,7 @@ mod tests {
                 updates.unbounded_send(changed).unwrap();
 
                 let mut signals = Vec::new();
-                while signals.len() < 5 {
+                while signals.len() < 4 {
                     let message = changes.next().await.unwrap().unwrap();
                     signals
                         .push(message.header().member().unwrap().to_string());
@@ -1068,7 +1087,6 @@ mod tests {
                     [
                         "NewIcon",
                         "NewToolTip",
-                        "NewTitle",
                         "ItemsPropertiesUpdated",
                         "LayoutUpdated"
                     ]

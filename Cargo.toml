@@ -220,6 +220,10 @@ objc2-app-kit = { version = "0.2.2", default-features = false, features = ["std"
 objc2-foundation = { version = "0.2.2", default-features = false, features = ["std", "NSThread"] }
 # 0.24 builds with Rust 1.88 (0.25 and later ask for 1.90)
 tray-icon = { version = "0.24.2", default-features = false }
+# The version `tray-icon` 0.24 uses: one message to its status item (the accessibility title)
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+# The version `tray-icon` 0.24 uses: what winit and tray-icon do not do on Windows
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_System_Registry", "Win32_System_Threading", "Wdk_System_SystemServices"] }
 zbus = { version = "5", default-features = false, features = ["async-io"] }
 # The escape sequence parser of the terminal widget (`iced::widget::terminal`); the one Alacritty uses
 vte = { version = "0.15", default-features = false, features = ["std", "ansi"] }
