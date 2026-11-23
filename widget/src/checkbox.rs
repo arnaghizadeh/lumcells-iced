@@ -597,6 +597,21 @@ where
             state.is_focused = false;
         }
 
+        operation.accessible(
+            self.id.as_ref(),
+            layout.bounds(),
+            operation::Accessible::new(operation::accessible::Role::CheckBox)
+                .label(self.label.as_deref())
+                .toggled(match self.state {
+                    State::Unchecked => operation::accessible::Toggled::No,
+                    State::Checked => operation::accessible::Toggled::Yes,
+                    State::Indeterminate => {
+                        operation::accessible::Toggled::Mixed
+                    }
+                })
+                .enabled(self.on_toggle.is_some()),
+        );
+
         if let Some(label) = self.label.as_deref() {
             operation.text(None, layout.bounds(), label);
         }

@@ -668,6 +668,19 @@ where
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
 
         operation.focusable(self.id.as_ref(), layout.bounds(), state);
+
+        let selected = self
+            .selected
+            .as_ref()
+            .map(|selected| selected.borrow().to_string());
+
+        operation.accessible(
+            self.id.as_ref(),
+            layout.bounds(),
+            operation::Accessible::new(operation::accessible::Role::ComboBox)
+                .label(self.placeholder.as_deref())
+                .value(selected.as_deref()),
+        );
     }
 
     fn mouse_interaction(

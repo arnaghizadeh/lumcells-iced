@@ -22,7 +22,7 @@ all-features = true
 maintenance = { status = "actively-developed" }
 
 [features]
-default = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "x11", "wayland", "tray", "single-instance"]
+default = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "x11", "wayland", "tray", "single-instance", "accessibility"]
 # Enables the `wgpu` GPU-accelerated renderer with all its default features (Vulkan, Metal, DX12, OpenGL, and WebGPU)
 wgpu = ["wgpu-bare", "iced_renderer/wgpu"]
 # Enables the `wgpu` GPU-accelerated renderer with the minimum required features (no backends!)
@@ -87,6 +87,8 @@ sipper = ["iced_runtime/sipper"]
 linux-theme-detection = ["iced_winit/linux-theme-detection"]
 # Enables the tray icon (`iced::tray`): StatusNotifierItem over D-Bus on Linux, `tray-icon` on macOS and Windows
 tray = ["iced_winit/tray"]
+# Enables the accessibility tree for screen readers (AccessKit)
+accessibility = ["iced_winit/accessibility"]
 # Enables `daemon(..).single_instance(id)`: a second start hands its arguments to the first and ends
 single-instance = ["iced_winit/single-instance"]
 # Enables the Unix X11 backend
@@ -208,6 +210,8 @@ log = "0.4"
 lyon = "1.0"
 lyon_path = "1.0"
 mundy = { version = "0.2", default-features = false }
+accesskit = "0.25"
+accesskit_winit = { version = "0.34", default-features = false, features = ["accesskit_unix", "async-io", "rwh_06"] }
 interprocess = { version = "2.2", default-features = false }
 # The versions `winit` 0.30 uses
 objc2-app-kit = { version = "0.2.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSRunningApplication"] }

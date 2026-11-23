@@ -26,6 +26,8 @@ pub use program::runtime;
 pub use runtime::futures;
 pub use winit;
 
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+pub mod accessibility;
 pub mod clipboard;
 pub mod conversion;
 pub mod single_instance;
@@ -177,6 +179,11 @@ where
         error: Option<Error>,
         system_theme: Option<oneshot::Sender<theme::Mode>>,
 
+        /// Makes the event loop turn and redraw; given to the
+        /// accessibility of each window.
+        #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+        wake: Arc<dyn Fn() + Send + Sync>,
+
         #[cfg(target_arch = "wasm32")]
         canvas: Option<web_sys::HtmlCanvasElement>,
     }
@@ -189,6 +196,17 @@ where
         receiver: control_receiver,
         error: None,
         system_theme: Some(system_theme_sender),
+
+        #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+        wake: {
+            let proxy = proxy.clone();
+
+            Arc::new(move || {
+                proxy.send_action(Action::Window(
+                    runtime::window::Action::RedrawAll,
+                ));
+            })
+        },
 
         #[cfg(target_arch = "wasm32")]
         canvas: None,
@@ -401,6 +419,21 @@ where
                                     .create_window(window_attributes)
                                     .expect("Create window");
 
+                                // Before the window is shown
+                                #[cfg(all(
+                                    feature = "accessibility",
+                                    not(target_arch = "wasm32")
+                                ))]
+                                let accessibility = {
+                                    let wake = self.wake.clone();
+
+                                    accessibility::Adapter::new(
+                                        event_loop,
+                                        &window,
+                                        move || wake(),
+                                    )
+                                };
+
                                 #[cfg(target_os = "macos")]
                                 if let Some(position) = position {
                                     window.set_outer_position(position);
@@ -456,6 +489,11 @@ where
                                     event_loop,
                                     Event::WindowCreated {
                                         id,
+                                        #[cfg(all(
+                                            feature = "accessibility",
+                                            not(target_arch = "wasm32")
+                                        ))]
+                                        accessibility,
                                         window: Arc::new(window),
                                         exit_on_close_request,
                                         make_visible: visible,
@@ -517,6 +555,8 @@ where
 enum Event<Message: 'static> {
     WindowCreated {
         id: window::Id,
+        #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+        accessibility: accessibility::Adapter,
         window: Arc<winit::window::Window>,
         exit_on_close_request: bool,
         make_visible: bool,
@@ -634,6 +674,11 @@ async fn run_instance<P>(
         match event {
             Event::WindowCreated {
                 id,
+                #[cfg(all(
+                    feature = "accessibility",
+                    not(target_arch = "wasm32")
+                ))]
+                accessibility,
                 window,
                 exit_on_close_request,
                 make_visible,
@@ -729,6 +774,14 @@ async fn run_instance<P>(
                     exit_on_close_request,
                     system_theme,
                 );
+
+                #[cfg(all(
+                    feature = "accessibility",
+                    not(target_arch = "wasm32")
+                ))]
+                {
+                    window.accessibility = Some(accessibility);
+                }
 
                 window.raw.set_theme(conversion::window_theme(
                     window.state.theme_mode(),
@@ -1022,6 +1075,29 @@ async fn run_instance<P>(
                         );
                         draw_span.finish();
 
+                        // What was drawn is told to assistive technology,
+                        // if any listens
+                        #[cfg(all(
+                            feature = "accessibility",
+                            not(target_arch = "wasm32")
+                        ))]
+                        if let Some(accessibility) = &mut window.accessibility {
+                            let title = program.title(id);
+                            let bounds = core::Rectangle::with_size(
+                                window.state.logical_size(),
+                            );
+                            let renderer = &window.renderer;
+
+                            accessibility.update(
+                                f64::from(window.state.scale_factor()),
+                                || {
+                                    runtime::accessibility::Tree::of(
+                                        interface, renderer, &title, bounds,
+                                    )
+                                },
+                            );
+                        }
+
                         if let user_interface::State::Updated {
                             redraw_request,
                             input_method,
@@ -1126,6 +1202,15 @@ async fn run_instance<P>(
                             continue;
                         };
 
+                        #[cfg(all(
+                            feature = "accessibility",
+                            not(target_arch = "wasm32")
+                        ))]
+                        if let Some(accessibility) = &mut window.accessibility {
+                            accessibility
+                                .process_event(&window.raw, &window_event);
+                        }
+
                         match window_event {
                             winit::event::WindowEvent::Resized(_) => {
                                 window.raw.request_redraw();
@@ -1189,6 +1274,40 @@ async fn run_instance<P>(
                         if actions > 0 {
                             proxy.free_slots(actions);
                             actions = 0;
+                        }
+
+                        // What assistive technology asked for
+                        #[cfg(all(
+                            feature = "accessibility",
+                            not(target_arch = "wasm32")
+                        ))]
+                        for (id, window) in window_manager.iter_mut() {
+                            let Some(accessibility) = &mut window.accessibility
+                            else {
+                                continue;
+                            };
+
+                            if accessibility.wants_tree() {
+                                window.raw.request_redraw();
+                            }
+
+                            let requests = accessibility.requests();
+
+                            let Some(ui) = user_interfaces.get_mut(&id) else {
+                                continue;
+                            };
+
+                            for request in requests {
+                                accessibility::perform(
+                                    request,
+                                    ui,
+                                    &mut window.renderer,
+                                    &mut clipboard,
+                                    &mut messages,
+                                );
+
+                                window.raw.request_redraw();
+                            }
                         }
 
                         if events.is_empty()

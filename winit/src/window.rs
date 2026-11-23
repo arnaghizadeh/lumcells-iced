@@ -80,6 +80,11 @@ where
                 renderer,
                 mouse_interaction: mouse::Interaction::None,
                 redraw_at: None,
+                #[cfg(all(
+                    feature = "accessibility",
+                    not(target_arch = "wasm32")
+                ))]
+                accessibility: None,
                 preedit: None,
                 ime_state: None,
             },
@@ -171,6 +176,8 @@ where
     pub surface_version: u64,
     pub renderer: P::Renderer,
     pub redraw_at: Option<Instant>,
+    #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+    pub accessibility: Option<crate::accessibility::Adapter>,
     preedit: Option<Preedit<P::Renderer>>,
     ime_state: Option<(Rectangle, input_method::Purpose)>,
 }

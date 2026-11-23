@@ -272,6 +272,49 @@ mod tests {
     }
 
     #[test]
+    fn the_form_is_told_to_assistive_technology() {
+        let mut form = Form::default();
+        form.update(Message::NameChanged("Ada".to_owned()));
+        form.update(Message::Agreed(true));
+
+        let mut ui = simulator(form.view());
+        let _: Option<()> = ui.operate(focus(Id::new("save")));
+
+        let tree = ui.accessibility("Focus ring");
+
+        assert_eq!(
+            tree.describe(),
+            r#"Window "Focus ring"
+  Text "Press Tab to move, Space or Enter to press"
+  TextInput "Your name" value="Ada"
+  CheckBox "I agree with the terms" toggled=Yes
+  Switch "Tell me when it is done" toggled=No
+  RadioButton "Monthly" toggled=Yes
+  RadioButton "Yearly" toggled=No
+  ComboBox value="Medium"
+  Button "Save" focused
+  Button "Cancel"
+  Button "Not yet" disabled
+  Text "Saved 0 times, cancelled 0 times"
+"#
+        );
+
+        // What can take the focus says so, with where it is
+        use iced_test::runtime::accessibility::Role;
+
+        let save = &tree.nodes[tree.focused().expect("a node is focused")];
+        assert_eq!(save.role, Role::Button);
+        assert!(save.bounds.width > 0.0 && save.bounds.height > 0.0);
+
+        assert!(tree.with_role(Role::Button).take(2).all(|b| b.is_focusable));
+        assert!(!tree.with_role(Role::Button).last().unwrap().is_focusable);
+        assert!(
+            tree.with_role(Role::TextInput)
+                .all(|field| field.is_focusable)
+        );
+    }
+
+    #[test]
     fn the_focused_button_draws_a_ring() {
         use iced::Theme;
         use iced::widget::button::{Status, primary};

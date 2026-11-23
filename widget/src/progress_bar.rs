@@ -164,6 +164,26 @@ where
         layout::atomic(limits, self.width(), self.height())
     }
 
+    fn operate(
+        &mut self,
+        _tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn crate::core::widget::Operation,
+    ) {
+        use crate::core::widget::operation::accessible::{Accessible, Role};
+
+        operation.accessible(
+            None,
+            layout.bounds(),
+            Accessible::new(Role::ProgressBar).range(
+                self.value,
+                *self.range.start(),
+                *self.range.end(),
+            ),
+        );
+    }
+
     fn draw(
         &self,
         _tree: &Tree,

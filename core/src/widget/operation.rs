@@ -1,8 +1,10 @@
 //! Query or update internal widget state.
+pub mod accessible;
 pub mod focusable;
 pub mod scrollable;
 pub mod text_input;
 
+pub use accessible::Accessible;
 pub use focusable::Focusable;
 pub use scrollable::Scrollable;
 pub use text_input::TextInput;
@@ -60,6 +62,18 @@ pub trait Operation<T = ()>: Send {
 
     /// Operates on a widget that contains some text.
     fn text(&mut self, _id: Option<&Id>, _bounds: Rectangle, _text: &str) {}
+
+    /// Operates on a widget that describes itself to assistive technology.
+    ///
+    /// What the widget visits in the `traverse` that follows are its
+    /// children.
+    fn accessible(
+        &mut self,
+        _id: Option<&Id>,
+        _bounds: Rectangle,
+        _accessible: Accessible<'_>,
+    ) {
+    }
 
     /// Operates on a custom widget with some state.
     fn custom(
@@ -125,6 +139,15 @@ where
 
     fn text(&mut self, id: Option<&Id>, bounds: Rectangle, text: &str) {
         self.as_mut().text(id, bounds, text);
+    }
+
+    fn accessible(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        accessible: Accessible<'_>,
+    ) {
+        self.as_mut().accessible(id, bounds, accessible);
     }
 
     fn custom(
@@ -230,6 +253,15 @@ where
             self.operation.text(id, bounds, text);
         }
 
+        fn accessible(
+            &mut self,
+            id: Option<&Id>,
+            bounds: Rectangle,
+            accessible: Accessible<'_>,
+        ) {
+            self.operation.accessible(id, bounds, accessible);
+        }
+
         fn custom(
             &mut self,
             id: Option<&Id>,
@@ -332,6 +364,15 @@ where
                     self.operation.text(id, bounds, text);
                 }
 
+                fn accessible(
+                    &mut self,
+                    id: Option<&Id>,
+                    bounds: Rectangle,
+                    accessible: Accessible<'_>,
+                ) {
+                    self.operation.accessible(id, bounds, accessible);
+                }
+
                 fn custom(
                     &mut self,
                     id: Option<&Id>,
@@ -388,6 +429,15 @@ where
 
         fn text(&mut self, id: Option<&Id>, bounds: Rectangle, text: &str) {
             self.operation.text(id, bounds, text);
+        }
+
+        fn accessible(
+            &mut self,
+            id: Option<&Id>,
+            bounds: Rectangle,
+            accessible: Accessible<'_>,
+        ) {
+            self.operation.accessible(id, bounds, accessible);
         }
 
         fn custom(
@@ -492,6 +542,15 @@ where
 
         fn text(&mut self, id: Option<&Id>, bounds: Rectangle, text: &str) {
             self.operation.text(id, bounds, text);
+        }
+
+        fn accessible(
+            &mut self,
+            id: Option<&Id>,
+            bounds: Rectangle,
+            accessible: Accessible<'_>,
+        ) {
+            self.operation.accessible(id, bounds, accessible);
         }
 
         fn custom(

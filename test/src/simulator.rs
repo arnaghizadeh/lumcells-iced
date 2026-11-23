@@ -209,6 +209,20 @@ where
         statuses
     }
 
+    /// Builds the tree that assistive technology would be given for the
+    /// interface in the [`Simulator`], under a window with the given title.
+    pub fn accessibility(
+        &mut self,
+        title: &str,
+    ) -> crate::runtime::accessibility::Tree {
+        crate::runtime::accessibility::Tree::of(
+            &mut self.raw,
+            &self.renderer,
+            title,
+            core::Rectangle::with_size(self.size),
+        )
+    }
+
     /// Returns what the widgets of the [`Simulator`] wrote last to the given
     /// kind of clipboard, if anything.
     ///

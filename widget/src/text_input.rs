@@ -687,6 +687,27 @@ where
     ) {
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
 
+        {
+            use crate::core::widget::operation::accessible::{
+                Accessible, Role,
+            };
+
+            // What is typed in a secure field is not told
+            let value = (!self.is_secure).then(|| self.value.to_string());
+
+            operation.accessible(
+                self.id.as_ref(),
+                layout.bounds(),
+                Accessible::new(Role::TextInput)
+                    .label(
+                        (!self.placeholder.is_empty())
+                            .then_some(self.placeholder.as_str()),
+                    )
+                    .value(value.as_deref())
+                    .enabled(self.on_input.is_some()),
+            );
+        }
+
         operation.text_input(self.id.as_ref(), layout.bounds(), state);
         operation.focusable(self.id.as_ref(), layout.bounds(), state);
     }

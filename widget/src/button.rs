@@ -298,6 +298,14 @@ where
             tree.state.downcast_mut::<State>().is_focused = false;
         }
 
+        // A button is named after the text inside it
+        operation.accessible(
+            self.id.as_ref(),
+            layout.bounds(),
+            operation::Accessible::new(operation::accessible::Role::Button)
+                .enabled(self.on_press.is_some()),
+        );
+
         operation.container(self.id.as_ref(), layout.bounds());
         operation.traverse(&mut |operation| {
             self.content.as_widget_mut().operate(

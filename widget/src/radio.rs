@@ -543,6 +543,15 @@ where
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
 
         operation.focusable(self.id.as_ref(), layout.bounds(), state);
+        operation.accessible(
+            self.id.as_ref(),
+            layout.bounds(),
+            operation::Accessible::new(
+                operation::accessible::Role::RadioButton,
+            )
+            .label(self.label.as_str())
+            .toggled(self.is_selected),
+        );
         operation.text(None, layout.bounds(), &self.label);
     }
 }

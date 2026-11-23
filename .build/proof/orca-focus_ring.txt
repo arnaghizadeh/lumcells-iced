@@ -1,0 +1,65 @@
+What Orca said for the focus_ring example
+==========================================
+
+Orca 46.1 on this workstation (Linux Mint 22.3), 23 Nov 2026 00:54 CT, run against
+target/debug/focus_ring (iced_winit with the `accessibility` feature, AccessKit over AT-SPI).
+
+The run was in a session of its own (Xvfb display, its own D-Bus session bus and AT-SPI bus,
+its own home and runtime directory, speech sent to an ALSA device that plays nothing), so
+that nothing was spoken on the workstation's speakers and the desktop was left alone. The
+lines below are Orca's own record of what it sent to the speech synthesizer ("SPEECH OUTPUT"
+in its debug log), in order; nobody listened to them.
+
+Keys sent with xdotool, one every 1.8 s:
+Tab, Tab, Shift+Tab, A, d, a, Tab, Space, Tab, Space, Tab, Tab, Space, Tab, Down, Tab, Return, Tab, Tab
+
+time             said
+00:54:19.388268  Screen reader on.
+00:54:26.757455  Focus ring frame.
+00:54:29.575986  tab
+00:54:31.383347  tab
+00:54:31.544468  I agree with the terms check box not checked.
+00:54:33.191888  left shift
+00:54:33.399796  Your name entry.
+00:54:35.024144  left shift
+00:54:35.067902  A
+00:54:36.845303  d
+00:54:38.663572  a
+00:54:40.481671  tab
+00:54:40.613807  I agree with the terms check box not checked.
+00:54:42.302873  space
+00:54:42.368836  checked
+00:54:44.120187  tab
+00:54:44.259690  Tell me when it is done toggle button not pressed.
+00:54:45.941679  space
+00:54:46.000080  pressed
+00:54:47.757845  tab
+00:54:47.901776  Monthly.
+00:54:47.905807  selected radio button
+00:54:49.578557  tab
+00:54:49.721218  Yearly.
+00:54:49.725377  not selected radio button
+00:54:51.401081  space
+00:54:51.464834  selected
+00:54:53.217331  tab
+00:54:53.349127  Medium combo box.
+00:54:56.856013  tab
+00:54:56.995621  Save push button.
+00:54:58.675737  return
+00:55:00.495740  tab
+00:55:00.634756  Cancel push button.
+00:55:02.317314  tab
+
+What this shows
+- The window is a frame with its title; the check box, the toggler (a "toggle button" to
+  Orca), the radio buttons, the pick list ("combo box", named by its chosen option), the
+  buttons and the text input (an "entry", named by its placeholder) are announced with role,
+  name and state when they get the focus, and state changes (checked, pressed, selected) are
+  announced when Space changes them.
+- The first Tab, from the frame to the text input, was not announced: Orca adopted the new
+  focus while it handled the key itself (its log says "Switching object of interest from
+  [frame: 'Focus ring'] to [entry: 'Your name']") and then found nothing new to say. Coming
+  back to the same field with Shift+Tab it said "Your name entry.".
+- Not announced: the option chosen with the Down key in the closed pick list (its name
+  changes, Orca says nothing), and what is typed in the text input beyond the key echo (no
+  text interface with caret and selection yet).

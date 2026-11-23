@@ -562,6 +562,15 @@ where
             state.is_focused = false;
         }
 
+        operation.accessible(
+            self.id.as_ref(),
+            layout.bounds(),
+            operation::Accessible::new(operation::accessible::Role::Switch)
+                .label(self.label.as_deref())
+                .toggled(self.is_toggled)
+                .enabled(self.on_toggle.is_some()),
+        );
+
         if let Some(label) = self.label.as_deref() {
             operation.text(None, layout.bounds(), label);
         }
