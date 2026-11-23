@@ -8,7 +8,6 @@
 //!
 //! What assistive technology asks for comes back as [`Request`]s: a press
 //! of a widget (its default action) and the keyboard focus on a widget.
-use crate::core::{Point, Rectangle};
 use crate::runtime::UserInterface;
 use crate::runtime::accessibility::{Role, Tree};
 
@@ -20,20 +19,32 @@ use accesskit::{
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// What assistive technology asks a window to do.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Request {
-    /// Press what is at this point, as a click of the pointer would.
-    Press(Point),
-    /// Give the keyboard focus to the widget with these bounds.
-    Focus(Rectangle),
+    /// Press a widget, as a click of the pointer would; what is scrolled
+    /// out of view is brought into view first.
+    Press(Target),
+    /// Give the keyboard focus to a widget.
+    Focus(Target),
+    /// Scroll what is around a widget so that it can be seen.
+    Reveal(Target),
+}
+
+/// The widget a [`Request`] is about: a node of the tree assistive
+/// technology was given last.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Target {
+    tree: Arc<Tree>,
+    index: usize,
 }
 
 #[derive(Default)]
 struct Shared {
     /// What assistive technology asked for and the window did not do yet.
     requests: Vec<ActionRequest>,
-    /// Where the nodes of the last tree are, by identifier.
-    bounds: Vec<Rectangle>,
+    /// The last tree that was handed out: what the identifiers of a
+    /// request mean.
+    tree: Option<Arc<Tree>>,
     /// Whether a tree is wanted that was not built yet.
     is_tree_wanted: bool,
 }
@@ -139,10 +150,12 @@ impl Adapter {
             let tree = build();
 
             let mut shared = lock(shared);
-            shared.bounds = tree.nodes.iter().map(|node| node.bounds).collect();
+            let update = tree_update(&tree, scale_factor);
+
+            shared.tree = Some(Arc::new(tree));
             shared.is_tree_wanted = false;
 
-            tree_update(&tree, scale_factor)
+            update
         });
     }
 
@@ -151,15 +164,26 @@ impl Adapter {
         let mut shared = lock(&self.shared);
         let requests = std::mem::take(&mut shared.requests);
 
+        let Some(tree) = shared.tree.clone() else {
+            return Vec::new();
+        };
+
         requests
             .into_iter()
             .filter_map(|request| {
-                let bounds =
-                    *shared.bounds.get(request.target_node.0 as usize)?;
+                let index = usize::try_from(request.target_node.0).ok()?;
+
+                let target = Target {
+                    tree: tree.clone(),
+                    index,
+                };
+
+                let _ = tree.nodes.get(index)?;
 
                 match request.action {
-                    Action::Click => Some(Request::Press(bounds.center())),
-                    Action::Focus => Some(Request::Focus(bounds)),
+                    Action::Click => Some(Request::Press(target)),
+                    Action::Focus => Some(Request::Focus(target)),
+                    Action::ScrollIntoView => Some(Request::Reveal(target)),
                     _ => None,
                 }
             })
@@ -178,52 +202,19 @@ pub fn perform<Message, Theme, Renderer>(
 ) where
     Renderer: crate::core::Renderer,
 {
-    use crate::core::mouse;
-    use crate::core::widget::operation::{Focusable, Operation};
+    use crate::runtime::accessibility;
 
     match request {
-        Request::Press(point) => {
-            let _ = ui.update(
-                &[
-                    crate::core::Event::Mouse(mouse::Event::ButtonPressed(
-                        mouse::Button::Left,
-                    )),
-                    crate::core::Event::Mouse(mouse::Event::ButtonReleased(
-                        mouse::Button::Left,
-                    )),
-                ],
-                mouse::Cursor::Available(point),
-                renderer,
-                clipboard,
-                messages,
+        Request::Press(Target { tree, index }) => {
+            let _ = accessibility::press(
+                &tree, index, ui, renderer, clipboard, messages,
             );
         }
-        Request::Focus(bounds) => {
-            struct Focus(Rectangle);
-
-            impl Operation for Focus {
-                fn traverse(
-                    &mut self,
-                    operate: &mut dyn FnMut(&mut dyn Operation),
-                ) {
-                    operate(self);
-                }
-
-                fn focusable(
-                    &mut self,
-                    _id: Option<&crate::core::widget::Id>,
-                    bounds: Rectangle,
-                    state: &mut dyn Focusable,
-                ) {
-                    if bounds == self.0 {
-                        state.focus();
-                    } else {
-                        state.unfocus();
-                    }
-                }
-            }
-
-            ui.operate(renderer, &mut Focus(bounds));
+        Request::Focus(Target { tree, index }) => {
+            accessibility::focus(&tree, index, ui, renderer);
+        }
+        Request::Reveal(Target { tree, index }) => {
+            let _ = accessibility::scroll_into_view(&tree, index, ui, renderer);
         }
     }
 }
@@ -235,6 +226,19 @@ fn node_id(index: usize) -> NodeId {
 
 /// Turns a [`Tree`] into what AccessKit wants: every node, every time.
 pub fn tree_update(tree: &Tree, scale_factor: f64) -> TreeUpdate {
+    // Which nodes are inside of something that scrolls
+    let mut is_scrolled = vec![false; tree.nodes.len()];
+
+    for (index, node) in tree.nodes.iter().enumerate() {
+        if node.role == Role::ScrollArea || is_scrolled[index] {
+            for child in &node.children {
+                if let Some(inside) = is_scrolled.get_mut(*child) {
+                    *inside = true;
+                }
+            }
+        }
+    }
+
     let nodes = tree
         .nodes
         .iter()
@@ -244,6 +248,8 @@ pub fn tree_update(tree: &Tree, scale_factor: f64) -> TreeUpdate {
                 Role::Window => accesskit::Role::Window,
                 Role::Text => accesskit::Role::Label,
                 Role::TextInput => accesskit::Role::TextInput,
+                Role::SecureTextInput => accesskit::Role::PasswordInput,
+                Role::ScrollArea => accesskit::Role::ScrollView,
                 Role::Button => accesskit::Role::Button,
                 Role::CheckBox => accesskit::Role::CheckBox,
                 Role::Switch => accesskit::Role::Switch,
@@ -267,13 +273,22 @@ pub fn tree_update(tree: &Tree, scale_factor: f64) -> TreeUpdate {
                 raw.set_transform(accesskit::Affine::scale(scale_factor));
             }
 
+            // A widget that was given a name of its own tells its
+            // placeholder beside it
+            let is_named =
+                node.label.is_some() && node.label != node.placeholder;
+
+            if is_named && let Some(placeholder) = &node.placeholder {
+                raw.set_placeholder(placeholder.as_str());
+            }
+
             match (&node.label, &node.value, node.role) {
                 // The text of a piece of text is its value
                 (Some(text), _, Role::Text) => raw.set_value(text.as_str()),
-                // A list is called by the option that is chosen, and by its
-                // placeholder while none is: screen readers do not read
-                // the value of a combo box
-                (_, Some(chosen), Role::ComboBox) => {
+                // A list without a name is called by the option that is
+                // chosen, and by its placeholder while none is: screen
+                // readers do not read the value of a combo box
+                (_, Some(chosen), Role::ComboBox) if !is_named => {
                     raw.set_label(chosen.as_str());
                     raw.set_value(chosen.as_str());
                 }
@@ -302,6 +317,33 @@ pub fn tree_update(tree: &Tree, scale_factor: f64) -> TreeUpdate {
                 raw.set_numeric_value(f64::from(value));
                 raw.set_min_numeric_value(f64::from(min));
                 raw.set_max_numeric_value(f64::from(max));
+            }
+
+            // What is inside a scroll area is cut at its edges, and it
+            // says how far it is scrolled
+            if let Some(scroll) = node.scroll {
+                raw.set_clips_children();
+
+                let room = |content: f32, view: f32| {
+                    f64::from((content - view).max(0.0))
+                };
+
+                raw.set_scroll_x(f64::from(scroll.offset.x));
+                raw.set_scroll_x_min(0.0);
+                raw.set_scroll_x_max(room(
+                    scroll.content.width,
+                    node.bounds.width,
+                ));
+                raw.set_scroll_y(f64::from(scroll.offset.y));
+                raw.set_scroll_y_min(0.0);
+                raw.set_scroll_y_max(room(
+                    scroll.content.height,
+                    node.bounds.height,
+                ));
+            }
+
+            if is_scrolled[index] {
+                raw.add_action(Action::ScrollIntoView);
             }
 
             if !node.is_enabled {
@@ -353,24 +395,22 @@ mod tests {
     use super::*;
 
     use crate::core::widget::operation::accessible::Toggled as T;
+    use crate::core::{Point, Rectangle, Size, Vector};
     use crate::runtime::accessibility::Node as TreeNode;
+    use crate::runtime::accessibility::Scroll;
 
     fn node(role: Role, label: Option<&str>, children: &[usize]) -> TreeNode {
-        TreeNode {
+        let mut node = TreeNode::new(
             role,
-            label: label.map(str::to_owned),
-            value: None,
-            toggled: None,
-            range: None,
-            is_enabled: true,
-            is_focusable: false,
-            is_focused: false,
-            bounds: Rectangle::new(
+            Rectangle::new(
                 Point::new(10.0, 20.0),
                 crate::core::Size::new(30.0, 40.0),
             ),
-            children: children.to_vec(),
-        }
+        );
+
+        node.label = label.map(str::to_owned);
+        node.children = children.to_vec();
+        node
     }
 
     #[test]
@@ -439,5 +479,87 @@ mod tests {
         assert_eq!(progress.role(), accesskit::Role::ProgressIndicator);
         assert_eq!(progress.numeric_value(), Some(30.0));
         assert_eq!(progress.max_numeric_value(), Some(100.0));
+    }
+
+    #[test]
+    fn a_scroll_area_cuts_what_is_inside_and_says_how_far_it_is() {
+        let mut area = node(Role::ScrollArea, None, &[2]);
+        area.bounds = Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0));
+        area.scroll = Some(Scroll {
+            offset: Vector::new(0.0, 40.0),
+            content: Size::new(200.0, 500.0),
+        });
+
+        let tree = Tree {
+            nodes: vec![
+                node(Role::Window, Some("List"), &[1, 3]),
+                area,
+                node(Role::Button, Some("Send a report"), &[]),
+                node(Role::Button, Some("Beside the list"), &[]),
+            ],
+        };
+
+        let update = tree_update(&tree, 1.0);
+
+        let (_, area) = &update.nodes[1];
+        assert_eq!(area.role(), accesskit::Role::ScrollView);
+        assert!(area.clips_children());
+        assert_eq!(area.scroll_y(), Some(40.0));
+        assert_eq!(area.scroll_y_max(), Some(400.0));
+        assert_eq!(area.scroll_x_max(), Some(0.0));
+
+        let (_, inside) = &update.nodes[2];
+        assert!(inside.supports_action(Action::ScrollIntoView));
+
+        let (_, beside) = &update.nodes[3];
+        assert!(!beside.supports_action(Action::ScrollIntoView));
+    }
+
+    #[test]
+    fn a_name_stands_before_a_placeholder_and_a_secret_is_a_password() {
+        let mut named = node(Role::TextInput, Some("Email"), &[]);
+        named.placeholder = Some("you@example.com".to_owned());
+
+        let mut unnamed = node(Role::TextInput, Some("you@example.com"), &[]);
+        unnamed.placeholder = Some("you@example.com".to_owned());
+
+        let mut list = node(Role::ComboBox, Some("Language"), &[]);
+        list.value = Some("Rust".to_owned());
+
+        let mut plain_list = node(Role::ComboBox, Some("Choose"), &[]);
+        plain_list.placeholder = Some("Choose".to_owned());
+        plain_list.value = Some("Rust".to_owned());
+
+        let tree = Tree {
+            nodes: vec![
+                node(Role::Window, Some("Form"), &[1, 2, 3, 4, 5]),
+                named,
+                unnamed,
+                node(Role::SecureTextInput, Some("Password"), &[]),
+                list,
+                plain_list,
+            ],
+        };
+
+        let update = tree_update(&tree, 1.0);
+
+        let (_, named) = &update.nodes[1];
+        assert_eq!(named.label(), Some("Email"));
+        assert_eq!(named.placeholder(), Some("you@example.com"));
+
+        let (_, unnamed) = &update.nodes[2];
+        assert_eq!(unnamed.label(), Some("you@example.com"));
+        assert_eq!(unnamed.placeholder(), None);
+
+        let (_, secret) = &update.nodes[3];
+        assert_eq!(secret.role(), accesskit::Role::PasswordInput);
+        assert_eq!(secret.value(), None);
+
+        let (_, list) = &update.nodes[4];
+        assert_eq!(list.label(), Some("Language"));
+        assert_eq!(list.value(), Some("Rust"));
+
+        let (_, plain_list) = &update.nodes[5];
+        assert_eq!(plain_list.label(), Some("Rust"));
     }
 }

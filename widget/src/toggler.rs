@@ -103,6 +103,7 @@ pub struct Toggler<
     class: Theme::Class<'a>,
     last_status: Option<Status>,
     id: Option<widget::Id>,
+    accessible_name: Option<String>,
 }
 
 impl<'a, Message, Theme, Renderer> Toggler<'a, Message, Theme, Renderer>
@@ -138,6 +139,7 @@ where
             class: Theme::default(),
             last_status: None,
             id: None,
+            accessible_name: None,
         }
     }
 
@@ -147,6 +149,16 @@ where
     /// [`operation::focus`](crate::core::widget::operation::focusable::focus).
     pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    /// Sets the name assistive technology (a screen reader) calls the
+    /// [`Toggler`] by.
+    ///
+    /// A [`Toggler`] without one is named by its label; a switch that stands
+    /// beside a text of its own has no name unless it is given here.
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
         self
     }
 
@@ -566,7 +578,9 @@ where
             self.id.as_ref(),
             layout.bounds(),
             operation::Accessible::new(operation::accessible::Role::Switch)
-                .label(self.label.as_deref())
+                .label(
+                    self.accessible_name.as_deref().or(self.label.as_deref()),
+                )
                 .toggled(self.is_toggled)
                 .enabled(self.on_toggle.is_some()),
         );

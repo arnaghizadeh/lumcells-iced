@@ -104,6 +104,7 @@ pub struct TextInput<
     Renderer: text::Renderer,
 {
     id: Option<widget::Id>,
+    accessible_name: Option<String>,
     placeholder: String,
     value: Value,
     is_secure: bool,
@@ -135,6 +136,7 @@ where
     pub fn new(placeholder: &str, value: &str) -> Self {
         TextInput {
             id: None,
+            accessible_name: None,
             placeholder: String::from(placeholder),
             value: Value::new(value),
             is_secure: false,
@@ -156,6 +158,17 @@ where
     /// Sets the [`widget::Id`] of the [`TextInput`].
     pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    /// Sets the name assistive technology (a screen reader) calls the
+    /// [`TextInput`] by.
+    ///
+    /// A [`TextInput`] without one is named by its placeholder, which is
+    /// an example of what to type and seldom the name of the field ("Email"
+    /// above a field that shows "you@example.com").
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
         self
     }
 
@@ -698,13 +711,19 @@ where
             operation.accessible(
                 self.id.as_ref(),
                 layout.bounds(),
-                Accessible::new(Role::TextInput)
-                    .label(
-                        (!self.placeholder.is_empty())
-                            .then_some(self.placeholder.as_str()),
-                    )
-                    .value(value.as_deref())
-                    .enabled(self.on_input.is_some()),
+                // A secure field says that it is one
+                Accessible::new(if self.is_secure {
+                    Role::SecureTextInput
+                } else {
+                    Role::TextInput
+                })
+                .label(self.accessible_name.as_deref())
+                .placeholder(
+                    (!self.placeholder.is_empty())
+                        .then_some(self.placeholder.as_str()),
+                )
+                .value(value.as_deref())
+                .enabled(self.on_input.is_some()),
             );
         }
 

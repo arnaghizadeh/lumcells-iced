@@ -223,6 +223,41 @@ where
         )
     }
 
+    /// Presses the node with the given index of `tree` (which
+    /// [`accessibility`](Self::accessibility) gave) the way a screen reader
+    /// does: what is scrolled out of view is scrolled into view first,
+    /// then it is clicked where it is drawn. Returns whether it was
+    /// pressed.
+    pub fn accessibility_press(
+        &mut self,
+        tree: &crate::runtime::accessibility::Tree,
+        index: usize,
+    ) -> bool {
+        crate::runtime::accessibility::press(
+            tree,
+            index,
+            &mut self.raw,
+            &mut self.renderer,
+            &mut self.clipboard,
+            &mut self.messages,
+        )
+    }
+
+    /// Scrolls the node with the given index of `tree` into view the way
+    /// a screen reader asks for it. Returns whether anything was scrolled.
+    pub fn accessibility_reveal(
+        &mut self,
+        tree: &crate::runtime::accessibility::Tree,
+        index: usize,
+    ) -> bool {
+        crate::runtime::accessibility::scroll_into_view(
+            tree,
+            index,
+            &mut self.raw,
+            &self.renderer,
+        )
+    }
+
     /// Returns what the widgets of the [`Simulator`] wrote last to the given
     /// kind of clipboard, if anything.
     ///

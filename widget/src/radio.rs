@@ -150,6 +150,7 @@ where
     class: Theme::Class<'a>,
     last_status: Option<Status>,
     id: Option<widget::Id>,
+    accessible_name: Option<String>,
 }
 
 impl<'a, Message, Theme, Renderer> Radio<'a, Message, Theme, Renderer>
@@ -197,6 +198,7 @@ where
             class: Theme::default(),
             last_status: None,
             id: None,
+            accessible_name: None,
         }
     }
 
@@ -206,6 +208,15 @@ where
     /// [`operation::focus`](crate::core::widget::operation::focusable::focus).
     pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    /// Sets the name assistive technology (a screen reader) calls the
+    /// [`Radio`] by.
+    ///
+    /// A [`Radio`] without one is named by its label.
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
         self
     }
 
@@ -549,7 +560,7 @@ where
             operation::Accessible::new(
                 operation::accessible::Role::RadioButton,
             )
-            .label(self.label.as_str())
+            .label(self.accessible_name.as_deref().unwrap_or(&self.label))
             .toggled(self.is_selected),
         );
         operation.text(None, layout.bounds(), &self.label);

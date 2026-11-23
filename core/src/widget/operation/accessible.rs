@@ -25,6 +25,9 @@ pub enum Role {
     ProgressBar,
     /// A field text is typed in.
     TextInput,
+    /// A field a secret is typed in (a password): what is typed is not
+    /// told.
+    SecureTextInput,
 }
 
 /// Whether something that can be ticked is.
@@ -53,6 +56,10 @@ pub struct Accessible<'a> {
     /// Its name: the text a person would call it by. A widget without one
     /// is named after the text of its children.
     pub label: Option<&'a str>,
+    /// What it shows while it is empty (a field) or nothing is chosen (a
+    /// list): an example, not a name. A widget without a name is called by
+    /// it.
+    pub placeholder: Option<&'a str>,
     /// Its value as text: the chosen option of a list.
     pub value: Option<&'a str>,
     /// Whether it is ticked, for what can be.
@@ -69,6 +76,7 @@ impl<'a> Accessible<'a> {
         Self {
             role,
             label: None,
+            placeholder: None,
             value: None,
             toggled: None,
             range: None,
@@ -79,6 +87,15 @@ impl<'a> Accessible<'a> {
     /// Sets the name of the widget.
     pub fn label(mut self, label: impl Into<Option<&'a str>>) -> Self {
         self.label = label.into();
+        self
+    }
+
+    /// Sets what the widget shows while it is empty.
+    pub fn placeholder(
+        mut self,
+        placeholder: impl Into<Option<&'a str>>,
+    ) -> Self {
+        self.placeholder = placeholder.into();
         self
     }
 

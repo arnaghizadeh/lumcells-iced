@@ -62,6 +62,7 @@ where
     girth: Length,
     is_vertical: bool,
     class: Theme::Class<'a>,
+    accessible_name: Option<String>,
 }
 
 impl<'a, Theme> ProgressBar<'a, Theme>
@@ -84,7 +85,16 @@ where
             girth: Length::from(Self::DEFAULT_GIRTH),
             is_vertical: false,
             class: Theme::default(),
+            accessible_name: None,
         }
+    }
+
+    /// Sets the name assistive technology (a screen reader) calls the
+    /// [`ProgressBar`] by: what it is the progress of. Without one a bar
+    /// is only a number.
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
     }
 
     /// Sets the width of the [`ProgressBar`].
@@ -176,11 +186,9 @@ where
         operation.accessible(
             None,
             layout.bounds(),
-            Accessible::new(Role::ProgressBar).range(
-                self.value,
-                *self.range.start(),
-                *self.range.end(),
-            ),
+            Accessible::new(Role::ProgressBar)
+                .label(self.accessible_name.as_deref())
+                .range(self.value, *self.range.start(), *self.range.end()),
         );
     }
 

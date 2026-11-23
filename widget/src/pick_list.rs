@@ -176,6 +176,7 @@ pub struct PickList<
     menu_class: <Theme as menu::Catalog>::Class<'a>,
     last_status: Option<Status>,
     id: Option<widget::Id>,
+    accessible_name: Option<String>,
     menu_height: Length,
 }
 
@@ -214,6 +215,7 @@ where
             menu_class: <Theme as Catalog>::default_menu(),
             last_status: None,
             id: None,
+            accessible_name: None,
             menu_height: Length::Shrink,
         }
     }
@@ -224,6 +226,16 @@ where
     /// [`operation::focus`](crate::core::widget::operation::focusable::focus).
     pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    /// Sets the name assistive technology (a screen reader) calls the
+    /// [`PickList`] by.
+    ///
+    /// A [`PickList`] without one is named by the chosen option, or by its
+    /// placeholder while none is chosen.
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
         self
     }
 
@@ -678,7 +690,8 @@ where
             self.id.as_ref(),
             layout.bounds(),
             operation::Accessible::new(operation::accessible::Role::ComboBox)
-                .label(self.placeholder.as_deref())
+                .label(self.accessible_name.as_deref())
+                .placeholder(self.placeholder.as_deref())
                 .value(selected.as_deref()),
         );
     }

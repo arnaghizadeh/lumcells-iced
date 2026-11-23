@@ -84,6 +84,7 @@ where
     class: Theme::Class<'a>,
     status: Option<Status>,
     id: Option<widget::Id>,
+    accessible_name: Option<String>,
 }
 
 enum OnPress<'a, Message> {
@@ -122,6 +123,7 @@ where
             class: Theme::default(),
             status: None,
             id: None,
+            accessible_name: None,
         }
     }
 
@@ -131,6 +133,17 @@ where
     /// [`operation::focus`](crate::core::widget::operation::focusable::focus).
     pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    /// Sets the name assistive technology (a screen reader) calls the
+    /// [`Button`] by.
+    ///
+    /// A [`Button`] without one is named after the text inside it; one that
+    /// holds only a picture (an arrow, an icon) has no name unless it is
+    /// given here.
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
         self
     }
 
@@ -298,11 +311,12 @@ where
             tree.state.downcast_mut::<State>().is_focused = false;
         }
 
-        // A button is named after the text inside it
+        // A button without a name is named after the text inside it
         operation.accessible(
             self.id.as_ref(),
             layout.bounds(),
             operation::Accessible::new(operation::accessible::Role::Button)
+                .label(self.accessible_name.as_deref())
                 .enabled(self.on_press.is_some()),
         );
 
