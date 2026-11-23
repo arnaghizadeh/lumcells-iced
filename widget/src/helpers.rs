@@ -2030,6 +2030,19 @@ where
     MouseArea::new(widget)
 }
 
+/// Creates a new [`FocusTrap`]: the keyboard focus stays inside the given
+/// content while it is part of the interface, as a modal layer needs.
+///
+/// [`FocusTrap`]: crate::FocusTrap
+pub fn focus_trap<'a, Message, Theme, Renderer>(
+    content: impl Into<Element<'a, Message, Theme, Renderer>>,
+) -> crate::FocusTrap<'a, Message, Theme, Renderer>
+where
+    Renderer: core::Renderer,
+{
+    crate::FocusTrap::new(content)
+}
+
 /// A widget that applies any `Theme` to its contents.
 pub fn themer<'a, Message, Theme, Renderer>(
     theme: Option<Theme>,

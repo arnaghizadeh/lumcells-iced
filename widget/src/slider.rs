@@ -35,6 +35,7 @@ use crate::core::layout;
 use crate::core::mouse;
 use crate::core::renderer;
 use crate::core::touch;
+use crate::core::widget::operation::{self, Operation};
 use crate::core::widget::tree::{self, Tree};
 use crate::core::window;
 use crate::core::{
@@ -95,6 +96,8 @@ where
     height: f32,
     class: Theme::Class<'a>,
     status: Option<Status>,
+    id: Option<core::widget::Id>,
+    accessible_name: Option<String>,
 }
 
 impl<'a, T, Message, Theme> Slider<'a, T, Message, Theme>
@@ -142,7 +145,24 @@ where
             height: Self::DEFAULT_HEIGHT,
             class: Theme::default(),
             status: None,
+            id: None,
+            accessible_name: None,
         }
+    }
+
+    /// Sets the [`Id`](core::widget::Id) of the [`Slider`], to focus it with
+    /// [`operation::focus`](crate::core::widget::operation::focusable::focus).
+    pub fn id(mut self, id: impl Into<core::widget::Id>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Sets the name of the [`Slider`] for assistive technology: a slider
+    /// has no text of its own, so without one a screen reader tells a
+    /// number and not what it is the number of.
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
     }
 
     /// Sets the optional default value for the [`Slider`].
@@ -241,6 +261,33 @@ where
         layout::atomic(limits, self.width, self.height)
     }
 
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        let state = tree.state.downcast_mut::<State>();
+
+        operation.focusable(self.id.as_ref(), layout.bounds(), state);
+
+        let (start, end) = self.range.clone().into_inner();
+
+        operation.accessible(
+            self.id.as_ref(),
+            layout.bounds(),
+            operation::Accessible::new(operation::accessible::Role::Slider)
+                .label(self.accessible_name.as_deref())
+                .range(
+                    self.value.into() as f32,
+                    start.into() as f32,
+                    end.into() as f32,
+                )
+                .step(self.step.into() as f32),
+        );
+    }
+
     fn update(
         &mut self,
         tree: &mut Tree,
@@ -321,7 +368,9 @@ where
                 T::from_f64(new_value)
             };
 
-            let change = |new_value: T| {
+            let is_captured = shell.is_event_captured();
+
+            let mut change = |new_value: T| {
                 if (self.value.into() - new_value.into()).abs() > f64::EPSILON {
                     shell.publish((self.on_change)(new_value));
 
@@ -334,6 +383,11 @@ where
                     mouse::Button::Left,
                 ))
                 | Event::Touch(touch::Event::FingerPressed { .. }) => {
+                    // A click elsewhere takes the keyboard focus away
+                    if !cursor.is_over(layout.bounds()) {
+                        state.is_focused = false;
+                    }
+
                     if let Some(cursor_position) =
                         cursor.position_over(layout.bounds())
                     {
@@ -393,7 +447,45 @@ where
                 Event::Keyboard(keyboard::Event::KeyPressed {
                     key, ..
                 }) => {
-                    if cursor.is_over(layout.bounds()) {
+                    if state.is_focused && !is_captured {
+                        // With the keyboard focus: the arrows step, Page Up
+                        // and Page Down step ten times, Home and End go to
+                        // the ends. Each key is a whole interaction, so the
+                        // release message follows it.
+                        let new_value = match key {
+                            Key::Named(
+                                key::Named::ArrowUp | key::Named::ArrowRight,
+                            ) => increment(current_value),
+                            Key::Named(
+                                key::Named::ArrowDown | key::Named::ArrowLeft,
+                            ) => decrement(current_value),
+                            Key::Named(key::Named::PageUp) => (0..10)
+                                .try_fold(current_value, |value, _| {
+                                    increment(value)
+                                }),
+                            Key::Named(key::Named::PageDown) => (0..10)
+                                .try_fold(current_value, |value, _| {
+                                    decrement(value)
+                                }),
+                            Key::Named(key::Named::Home) => {
+                                Some(*self.range.start())
+                            }
+                            Key::Named(key::Named::End) => {
+                                Some(*self.range.end())
+                            }
+                            _ => None,
+                        };
+
+                        if let Some(new_value) = new_value {
+                            change(new_value);
+
+                            if let Some(on_release) = self.on_release.clone() {
+                                shell.publish(on_release);
+                            }
+
+                            shell.capture_event();
+                        }
+                    } else if cursor.is_over(layout.bounds()) {
                         match key {
                             Key::Named(key::Named::ArrowUp) => {
                                 let _ = increment(current_value).map(change);
@@ -420,6 +512,8 @@ where
 
         let current_status = if state.is_dragging {
             Status::Dragged
+        } else if state.is_focused {
+            Status::Focused
         } else if cursor.is_over(layout.bounds()) {
             Status::Hovered
         } else {
@@ -568,9 +662,24 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct State {
-    is_dragging: bool,
-    keyboard_modifiers: keyboard::Modifiers,
+pub(crate) struct State {
+    pub(crate) is_dragging: bool,
+    pub(crate) is_focused: bool,
+    pub(crate) keyboard_modifiers: keyboard::Modifiers,
+}
+
+impl operation::Focusable for State {
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+
+    fn focus(&mut self) {
+        self.is_focused = true;
+    }
+
+    fn unfocus(&mut self) {
+        self.is_focused = false;
+    }
 }
 
 /// The possible status of a [`Slider`].
@@ -582,6 +691,11 @@ pub enum Status {
     Hovered,
     /// The [`Slider`] is being dragged.
     Dragged,
+    /// The [`Slider`] has the keyboard focus: the arrows, Page Up, Page
+    /// Down, Home and End move it.
+    ///
+    /// A style is expected to draw a focus ring; see [`focus_ring`].
+    Focused,
 }
 
 /// The appearance of a slider.
@@ -677,12 +791,12 @@ pub fn default(theme: &Theme, status: Status) -> Style {
     let palette = theme.extended_palette();
 
     let color = match status {
-        Status::Active => palette.primary.base.color,
+        Status::Active | Status::Focused => palette.primary.base.color,
         Status::Hovered => palette.primary.strong.color,
         Status::Dragged => palette.primary.weak.color,
     };
 
-    Style {
+    let style = Style {
         rail: Rail {
             backgrounds: (color.into(), palette.background.strong.color.into()),
             width: 4.0,
@@ -698,5 +812,24 @@ pub fn default(theme: &Theme, status: Status) -> Style {
             border_color: Color::TRANSPARENT,
             border_width: 0.0,
         },
+    };
+
+    match status {
+        Status::Focused => focus_ring(theme, style),
+        _ => style,
+    }
+}
+
+/// Draws the focus ring of the built-in theme on the handle of the given
+/// [`Style`]: a two-pixel border in the color of the text. For a custom
+/// style to use in its [`Status::Focused`] case.
+pub fn focus_ring(theme: &Theme, style: Style) -> Style {
+    Style {
+        handle: Handle {
+            border_width: 2.0,
+            border_color: theme.extended_palette().background.base.text,
+            ..style.handle
+        },
+        ..style
     }
 }

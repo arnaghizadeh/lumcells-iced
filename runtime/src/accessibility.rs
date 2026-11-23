@@ -51,6 +51,8 @@ pub enum Role {
     ComboBox,
     /// A bar that shows how far something is.
     ProgressBar,
+    /// A handle on a rail that chooses a number between two ends.
+    Slider,
 }
 
 /// A widget, as assistive technology is told about it.
@@ -500,6 +502,7 @@ impl Operation for Collector {
             accessible::Role::ProgressBar => Role::ProgressBar,
             accessible::Role::TextInput => Role::TextInput,
             accessible::Role::SecureTextInput => Role::SecureTextInput,
+            accessible::Role::Slider => Role::Slider,
             // A role of a later version: told as nothing in particular
             _ => return,
         };

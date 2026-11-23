@@ -920,6 +920,7 @@ where
                             backgrounds: (
                                 match status {
                                     slider::Status::Active
+                                    | slider::Status::Focused
                                     | slider::Status::Dragged => {
                                         palette.background.strongest.color
                                     }

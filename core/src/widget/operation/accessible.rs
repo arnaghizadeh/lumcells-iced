@@ -28,6 +28,8 @@ pub enum Role {
     /// A field a secret is typed in (a password): what is typed is not
     /// told.
     SecureTextInput,
+    /// A handle on a rail that chooses a number between two ends.
+    Slider,
 }
 
 /// Whether something that can be ticked is.
@@ -66,6 +68,8 @@ pub struct Accessible<'a> {
     pub toggled: Option<Toggled>,
     /// Its value as a number with the least and the most it can be.
     pub range: Option<(f32, f32, f32)>,
+    /// How far one step moves the number of [`range`](Self::range).
+    pub step: Option<f32>,
     /// Whether it can be used.
     pub is_enabled: bool,
 }
@@ -80,6 +84,7 @@ impl<'a> Accessible<'a> {
             value: None,
             toggled: None,
             range: None,
+            step: None,
             is_enabled: true,
         }
     }
@@ -115,6 +120,12 @@ impl<'a> Accessible<'a> {
     /// most it can be.
     pub fn range(mut self, value: f32, min: f32, max: f32) -> Self {
         self.range = Some((value, min, max));
+        self
+    }
+
+    /// Sets how far one step moves the number of the widget.
+    pub fn step(mut self, step: f32) -> Self {
+        self.step = Some(step);
         self
     }
 

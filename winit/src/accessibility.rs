@@ -256,6 +256,7 @@ pub fn tree_update(tree: &Tree, scale_factor: f64) -> TreeUpdate {
                 Role::RadioButton => accesskit::Role::RadioButton,
                 Role::ComboBox => accesskit::Role::ComboBox,
                 Role::ProgressBar => accesskit::Role::ProgressIndicator,
+                Role::Slider => accesskit::Role::Slider,
                 _ => accesskit::Role::GenericContainer,
             };
 

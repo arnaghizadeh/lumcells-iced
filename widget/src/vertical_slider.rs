@@ -41,12 +41,14 @@ use crate::core::layout::{self, Layout};
 use crate::core::mouse;
 use crate::core::renderer;
 use crate::core::touch;
+use crate::core::widget::operation::{self, Operation};
 use crate::core::widget::tree::{self, Tree};
 use crate::core::window;
 use crate::core::{
     self, Clipboard, Element, Event, Length, Pixels, Point, Rectangle, Shell,
     Size, Widget,
 };
+use crate::slider::State;
 
 /// An vertical bar and a handle that selects a single value from a range of
 /// values.
@@ -99,6 +101,8 @@ where
     height: Length,
     class: Theme::Class<'a>,
     status: Option<Status>,
+    id: Option<core::widget::Id>,
+    accessible_name: Option<String>,
 }
 
 impl<'a, T, Message, Theme> VerticalSlider<'a, T, Message, Theme>
@@ -146,7 +150,23 @@ where
             height: Length::Fill,
             class: Theme::default(),
             status: None,
+            id: None,
+            accessible_name: None,
         }
+    }
+
+    /// Sets the [`Id`](core::widget::Id) of the [`VerticalSlider`], to focus
+    /// it with
+    /// [`operation::focus`](crate::core::widget::operation::focusable::focus).
+    pub fn id(mut self, id: impl Into<core::widget::Id>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Sets the name of the [`VerticalSlider`] for assistive technology.
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
     }
 
     /// Sets the optional default value for the [`VerticalSlider`].
@@ -245,6 +265,33 @@ where
         layout::atomic(limits, self.width, self.height)
     }
 
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        let state = tree.state.downcast_mut::<State>();
+
+        operation.focusable(self.id.as_ref(), layout.bounds(), state);
+
+        let (start, end) = self.range.clone().into_inner();
+
+        operation.accessible(
+            self.id.as_ref(),
+            layout.bounds(),
+            operation::Accessible::new(operation::accessible::Role::Slider)
+                .label(self.accessible_name.as_deref())
+                .range(
+                    self.value.into() as f32,
+                    start.into() as f32,
+                    end.into() as f32,
+                )
+                .step(self.step.into() as f32),
+        );
+    }
+
     fn update(
         &mut self,
         tree: &mut Tree,
@@ -325,7 +372,9 @@ where
             T::from_f64(new_value)
         };
 
-        let change = |new_value: T| {
+        let is_captured = shell.is_event_captured();
+
+        let mut change = |new_value: T| {
             if (self.value.into() - new_value.into()).abs() > f64::EPSILON {
                 shell.publish((self.on_change)(new_value));
 
@@ -336,6 +385,11 @@ where
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
+                // A click elsewhere takes the keyboard focus away
+                if !cursor.is_over(layout.bounds()) {
+                    state.is_focused = false;
+                }
+
                 if let Some(cursor_position) =
                     cursor.position_over(layout.bounds())
                 {
@@ -390,7 +444,40 @@ where
                 }
             }
             Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) => {
-                if cursor.is_over(layout.bounds()) {
+                if state.is_focused && !is_captured {
+                    // As the horizontal slider with the keyboard focus
+                    let new_value = match key {
+                        Key::Named(
+                            key::Named::ArrowUp | key::Named::ArrowRight,
+                        ) => increment(current_value),
+                        Key::Named(
+                            key::Named::ArrowDown | key::Named::ArrowLeft,
+                        ) => decrement(current_value),
+                        Key::Named(key::Named::PageUp) => (0..10)
+                            .try_fold(current_value, |value, _| {
+                                increment(value)
+                            }),
+                        Key::Named(key::Named::PageDown) => (0..10)
+                            .try_fold(current_value, |value, _| {
+                                decrement(value)
+                            }),
+                        Key::Named(key::Named::Home) => {
+                            Some(*self.range.start())
+                        }
+                        Key::Named(key::Named::End) => Some(*self.range.end()),
+                        _ => None,
+                    };
+
+                    if let Some(new_value) = new_value {
+                        change(new_value);
+
+                        if let Some(on_release) = self.on_release.clone() {
+                            shell.publish(on_release);
+                        }
+
+                        shell.capture_event();
+                    }
+                } else if cursor.is_over(layout.bounds()) {
                     match key {
                         Key::Named(key::Named::ArrowUp) => {
                             let _ = increment(current_value).map(change);
@@ -412,6 +499,8 @@ where
 
         let current_status = if state.is_dragging {
             Status::Dragged
+        } else if state.is_focused {
+            Status::Focused
         } else if cursor.is_over(layout.bounds()) {
             Status::Hovered
         } else {
@@ -558,10 +647,4 @@ where
     ) -> Element<'a, Message, Theme, Renderer> {
         Element::new(slider)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct State {
-    is_dragging: bool,
-    keyboard_modifiers: keyboard::Modifiers,
 }

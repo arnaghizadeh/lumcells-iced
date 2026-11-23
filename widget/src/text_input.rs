@@ -728,7 +728,18 @@ where
         }
 
         operation.text_input(self.id.as_ref(), layout.bounds(), state);
-        operation.focusable(self.id.as_ref(), layout.bounds(), state);
+
+        if self.on_input.is_some() {
+            operation.focusable(self.id.as_ref(), layout.bounds(), state);
+        } else {
+            // A field that cannot be typed in still takes the focus from a
+            // click (to copy from it), but Tab does not stop at it
+            operation.focusable(
+                self.id.as_ref(),
+                layout.bounds(),
+                &mut operation::focusable::Passed(state),
+            );
+        }
     }
 
     fn update(

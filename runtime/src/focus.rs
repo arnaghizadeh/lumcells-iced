@@ -77,5 +77,27 @@ where
         }
     }
 
+    let _ = reveal(ui, renderer);
+
     true
+}
+
+/// Scrolls what is around the widget that has the keyboard focus so that it
+/// can be seen: the focus that Tab moved under the fold of a `scrollable`
+/// would be out of sight. Returns whether anything was scrolled.
+pub fn reveal<Message, Theme, Renderer>(
+    ui: &mut UserInterface<'_, Message, Theme, Renderer>,
+    renderer: &Renderer,
+) -> bool
+where
+    Renderer: core::Renderer,
+{
+    use crate::accessibility::{self, Tree};
+
+    // The tree knows where everything is drawn after scrolling
+    let tree = Tree::of(ui, renderer, "", core::Rectangle::INFINITE);
+
+    tree.focused().is_some_and(|focused| {
+        accessibility::scroll_into_view(&tree, focused, ui, renderer)
+    })
 }

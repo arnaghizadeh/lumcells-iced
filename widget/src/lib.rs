@@ -11,6 +11,7 @@ pub use core::widget::Id;
 
 mod action;
 mod column;
+mod focus_trap;
 mod mouse_area;
 mod pin;
 mod responsive;
@@ -65,6 +66,8 @@ pub use combo_box::ComboBox;
 pub use container::Container;
 #[doc(no_inline)]
 pub use float::Float;
+#[doc(no_inline)]
+pub use focus_trap::FocusTrap;
 #[doc(no_inline)]
 pub use grid::Grid;
 #[doc(no_inline)]

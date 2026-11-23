@@ -1094,7 +1094,12 @@ where
     ) {
         let state = tree.state.downcast_mut::<State<Highlighter>>();
 
-        operation.focusable(self.id.as_ref(), layout.bounds(), state);
+        if self.on_edit.is_some() {
+            operation.focusable(self.id.as_ref(), layout.bounds(), state);
+        } else {
+            // An editor that takes no action does not take the focus
+            state.focus = None;
+        }
     }
 }
 

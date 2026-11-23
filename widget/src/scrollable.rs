@@ -551,6 +551,28 @@ where
         let translation =
             state.translation(self.direction, bounds, content_bounds);
 
+        // A scrollable takes the keyboard focus itself (the arrows, Page Up,
+        // Page Down, Home and End then scroll it) when there is something
+        // to scroll and nothing inside it that takes the focus: otherwise a
+        // person without a pointer could not read to its end. With a
+        // focusable widget inside, that widget is the stop.
+        let is_focusable = (content_bounds.height > bounds.height
+            || content_bounds.width > bounds.width)
+            && !has_focusable(
+                self.content.as_widget_mut(),
+                &mut tree.children[0],
+                content_layout,
+                renderer,
+            );
+
+        let state = tree.state.downcast_mut::<State>();
+
+        if is_focusable {
+            operation.focusable(self.id.as_ref(), bounds, state);
+        } else {
+            state.is_focused = false;
+        }
+
         operation.scrollable(
             self.id.as_ref(),
             bounds,
@@ -1001,6 +1023,69 @@ where
                 )) => {
                     state.keyboard_modifiers = *modifiers;
                 }
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(key),
+                    modifiers,
+                    ..
+                }) if state.is_focused => {
+                    use keyboard::key::Named;
+
+                    const LINE: f32 = 40.0;
+
+                    let page = Vector::new(
+                        (bounds.width - LINE).max(LINE),
+                        (bounds.height - LINE).max(LINE),
+                    );
+                    let everything = Vector::new(
+                        content_bounds.width.max(bounds.width),
+                        content_bounds.height.max(bounds.height),
+                    );
+
+                    let vertical = |y| {
+                        // A scrollable that only goes sideways
+                        // goes sideways with every key
+                        if content_bounds.height > bounds.height {
+                            Vector::new(0.0, y)
+                        } else {
+                            Vector::new(y, 0.0)
+                        }
+                    };
+
+                    let delta = match key {
+                        Named::ArrowUp => vertical(-LINE),
+                        Named::ArrowDown => vertical(LINE),
+                        Named::ArrowLeft => Vector::new(-LINE, 0.0),
+                        Named::ArrowRight => Vector::new(LINE, 0.0),
+                        Named::PageUp => vertical(-page.y),
+                        Named::PageDown => vertical(page.y),
+                        Named::Space if modifiers.shift() => vertical(-page.y),
+                        Named::Space => vertical(page.y),
+                        Named::Home => -everything,
+                        Named::End => everything,
+                        _ => return,
+                    };
+
+                    state.scroll(delta, bounds, content_bounds);
+
+                    let _ = notify_scroll(
+                        state,
+                        &self.on_scroll,
+                        bounds,
+                        content_bounds,
+                        shell,
+                    );
+
+                    // The wheel may go on to what is around after this
+                    state.last_scrolled = None;
+
+                    shell.capture_event();
+                }
+                Event::Mouse(mouse::Event::ButtonPressed(
+                    mouse::Button::Left,
+                )) if cursor_over_scrollable.is_none() => {
+                    // A click elsewhere takes the keyboard focus away
+                    state.is_focused = false;
+                }
                 Event::Window(window::Event::RedrawRequested(now)) => {
                     if let Interaction::AutoScrolling {
                         origin,
@@ -1103,6 +1188,11 @@ where
                 is_vertical_scrollbar_dragged: state
                     .y_scroller_grabbed_at()
                     .is_some(),
+                is_horizontal_scrollbar_disabled: scrollbars.is_x_disabled(),
+                is_vertical_scrollbar_disabled: scrollbars.is_y_disabled(),
+            }
+        } else if state.is_focused {
+            Status::Focused {
                 is_horizontal_scrollbar_disabled: scrollbars.is_x_disabled(),
                 is_vertical_scrollbar_disabled: scrollbars.is_y_disabled(),
             }
@@ -1305,6 +1395,23 @@ where
                     ..visible_bounds
                 },
             );
+        }
+
+        // The focus ring is the border of the container, drawn once more
+        // above what is inside: the content would cover it.
+        if matches!(self.last_status, Some(Status::Focused { .. }))
+            && style.container.border.width > 0.0
+        {
+            renderer.with_layer(visible_bounds, |renderer| {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds,
+                        border: style.container.border,
+                        ..renderer::Quad::default()
+                    },
+                    Color::TRANSPARENT,
+                );
+            });
         }
     }
 
@@ -1644,6 +1751,57 @@ struct State {
     last_notified: Option<Viewport>,
     last_scrolled: Option<Instant>,
     is_scrollbar_visible: bool,
+    is_focused: bool,
+}
+
+impl operation::Focusable for State {
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+
+    fn focus(&mut self) {
+        self.is_focused = true;
+    }
+
+    fn unfocus(&mut self) {
+        self.is_focused = false;
+    }
+}
+
+/// Returns whether anything inside the given widget takes the keyboard
+/// focus.
+fn has_focusable<Message, Theme, Renderer>(
+    content: &mut dyn Widget<Message, Theme, Renderer>,
+    tree: &mut Tree,
+    layout: Layout<'_>,
+    renderer: &Renderer,
+) -> bool
+where
+    Renderer: core::Renderer,
+{
+    struct Find(bool);
+
+    impl Operation for Find {
+        fn focusable(
+            &mut self,
+            _id: Option<&widget::Id>,
+            bounds: Rectangle,
+            _state: &mut dyn operation::Focusable,
+        ) {
+            self.0 = self.0 || operation::focusable::is_visible(bounds);
+        }
+
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            if !self.0 {
+                operate(self);
+            }
+        }
+    }
+
+    let mut find = Find(false);
+    content.operate(tree, layout, renderer, &mut find);
+
+    find.0
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1669,6 +1827,7 @@ impl Default for State {
             last_notified: None,
             last_scrolled: None,
             is_scrollbar_visible: true,
+            is_focused: false,
         }
     }
 }
@@ -2264,6 +2423,18 @@ pub enum Status {
         /// Whether or not the vertical scrollbar is disabled meaning the content isn't overflowing.
         is_vertical_scrollbar_disabled: bool,
     },
+    /// The [`Scrollable`] has the keyboard focus: the arrows, Page Up, Page
+    /// Down, Space, Home and End scroll it. It takes the focus only when
+    /// there is something to scroll and nothing inside it does.
+    ///
+    /// A style is expected to give its container a border, which is then
+    /// drawn as a focus ring above the content.
+    Focused {
+        /// Whether or not the horizontal scrollbar is disabled meaning the content isn't overflowing.
+        is_horizontal_scrollbar_disabled: bool,
+        /// Whether or not the vertical scrollbar is disabled meaning the content isn't overflowing.
+        is_vertical_scrollbar_disabled: bool,
+    },
 }
 
 /// The appearance of a scrollable.
@@ -2368,6 +2539,14 @@ pub fn default(theme: &Theme, status: Status) -> Style {
     };
 
     match status {
+        Status::Focused { .. } => Style {
+            container: container::Style::default()
+                .border(border::width(2).color(palette.background.base.text)),
+            vertical_rail: scrollbar,
+            horizontal_rail: scrollbar,
+            gap: None,
+            auto_scroll,
+        },
         Status::Active { .. } => Style {
             container: container::Style::default(),
             vertical_rail: scrollbar,

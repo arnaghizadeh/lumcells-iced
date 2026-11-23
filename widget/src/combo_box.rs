@@ -269,6 +269,25 @@ where
         }
     }
 
+    /// Sets the [`Id`](widget::Id) of the field of the [`ComboBox`], to
+    /// focus it with
+    /// [`operation::focus`](crate::core::widget::operation::focusable::focus).
+    pub fn id(self, id: impl Into<widget::Id>) -> Self {
+        Self {
+            text_input: self.text_input.id(id),
+            ..self
+        }
+    }
+
+    /// Sets the name of the [`ComboBox`] for assistive technology; without
+    /// one it is called by its placeholder.
+    pub fn accessible_name(self, name: impl Into<String>) -> Self {
+        Self {
+            text_input: self.text_input.accessible_name(name),
+            ..self
+        }
+    }
+
     /// Sets the width of the [`ComboBox`].
     pub fn width(self, width: impl Into<Length>) -> Self {
         Self {
@@ -488,6 +507,7 @@ struct Menu<T> {
     hovered_option: Option<usize>,
     new_selection: Option<T>,
     filtered_options: Filtered<T>,
+    was_focused: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -539,6 +559,7 @@ where
             filtered_options: Filtered::empty(),
             hovered_option: Some(0),
             new_selection: None,
+            was_focused: false,
         })
     }
 
@@ -563,13 +584,9 @@ where
     ) {
         let menu = tree.state.downcast_mut::<Menu<T>>();
 
-        let started_focused = {
-            let text_input_state = tree.children[0]
-                .state
-                .downcast_ref::<text_input::State<Renderer::Paragraph>>();
-
-            text_input_state.is_focused()
-        };
+        // What the focus was when we last looked: it also changes between
+        // two events, when Tab or an operation moves it
+        let started_focused = menu.was_focused;
         // This is intended to check whether or not the message buffer was empty,
         // since `Shell` does not expose such functionality.
         let mut published_message_to_shell = false;
@@ -668,7 +685,7 @@ where
                             shell.capture_event();
                             shell.request_redraw();
                         }
-                        (key::Named::ArrowUp, _) | (key::Named::Tab, true) => {
+                        (key::Named::ArrowUp, _) => {
                             if let Some(index) = &mut menu.hovered_option {
                                 if *index == 0 {
                                     *index = state
@@ -703,10 +720,7 @@ where
                             shell.capture_event();
                             shell.request_redraw();
                         }
-                        (key::Named::ArrowDown, _)
-                        | (key::Named::Tab, false)
-                            if !modifiers.shift() =>
-                        {
+                        (key::Named::ArrowDown, _) => {
                             if let Some(index) = &mut menu.hovered_option {
                                 if *index
                                     >= state
@@ -794,6 +808,8 @@ where
             text_input_state.is_focused()
         };
 
+        menu.was_focused = is_focused;
+
         if started_focused != is_focused {
             // Focus changed, invalidate widget tree to force a fresh `view`
             shell.invalidate_widgets();
@@ -808,6 +824,24 @@ where
                 }
             }
         }
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut widget::Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        // The field of the combo box is what takes the focus; the list is
+        // open for as long as it has it
+        Widget::<TextInputEvent, Theme, Renderer>::operate(
+            &mut self.text_input,
+            &mut tree.children[0],
+            layout,
+            renderer,
+            operation,
+        );
     }
 
     fn mouse_interaction(
