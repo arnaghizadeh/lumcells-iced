@@ -7,6 +7,8 @@ use crate::core::overlay;
 use crate::core::renderer;
 use crate::core::text::{self, Text};
 use crate::core::touch;
+use crate::core::widget::operation::Operation;
+use crate::core::widget::operation::accessible::{self, Accessible};
 use crate::core::widget::tree::{self, Tree};
 use crate::core::window;
 use crate::core::{
@@ -219,7 +221,9 @@ where
             padding,
             class,
         })
-        .height(menu_height);
+        .height(menu_height)
+        // The keys of an open list choose in it; it is no stop of Tab
+        .tab_stop(false);
 
         state.tree.diff(&list as &dyn Widget<_, _, _>);
 
@@ -267,6 +271,24 @@ where
         } else {
             self.position - Vector::new(0.0, size.height)
         })
+    }
+
+    fn operate(
+        &mut self,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        // The open list, with its options inside it
+        operation.accessible(
+            None,
+            layout.bounds(),
+            Accessible::new(accessible::Role::Menu),
+        );
+        operation.container(None, layout.bounds());
+        operation.traverse(&mut |operation| {
+            self.list.operate(self.tree, layout, renderer, operation);
+        });
     }
 
     fn update(
@@ -396,6 +418,39 @@ where
         };
 
         layout::Node::new(size)
+    }
+
+    fn operate(
+        &mut self,
+        _tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        let bounds = layout.bounds();
+
+        let text_size =
+            self.text_size.unwrap_or_else(|| renderer.default_size());
+
+        let option_height =
+            f32::from(self.text_line_height.to_absolute(text_size))
+                + self.padding.y();
+
+        for (i, option) in self.options.iter().enumerate() {
+            let label = option.to_string();
+
+            operation.accessible(
+                None,
+                Rectangle {
+                    y: bounds.y + option_height * i as f32,
+                    height: option_height,
+                    ..bounds
+                },
+                Accessible::new(accessible::Role::MenuItem)
+                    .label(label.as_str())
+                    .selected(*self.hovered_option == Some(i)),
+            );
+        }
     }
 
     fn update(

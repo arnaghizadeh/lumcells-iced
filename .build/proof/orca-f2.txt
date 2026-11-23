@@ -1,0 +1,229 @@
+What Orca said for the examples, lane F2
+========================================
+
+Orca 46.1 on this workstation (Linux Mint 22.3), 23 Nov 2026, against target/debug/focus_ring,
+screen_reader and accessible_names (iced_winit with the `accessibility` feature, AccessKit over
+AT-SPI), made with `.github/scripts/orca-read.sh <program> <keys> <out>`.
+
+Each run was in a session of its own (Xvfb display with openbox, its own D-Bus session bus and
+AT-SPI bus, its own home and runtime directory, speech sent to an ALSA device that plays
+nothing). Nothing was spoken on the speakers and NOBODY LISTENED: the lines marked "said" are
+Orca's own record of what it sent to the speech synthesizer ("SPEECH OUTPUT" in its debug log).
+The lines in brackets are the keys xdotool sent, one every 1.8 s. Orca's echo of the key itself
+("tab", "return", "space", "left shift", "escape") is left out.
+
+What it shows that is new since F1's orca-focus_ring.txt:
+- a slider is "Volume slider 40." and each arrow says the new number;
+- a scrollable that is a stop says "panel." and reads what is inside it;
+- a combo box is "Language combo box.", its open list is "list box" with the option under the keys;
+- a pick list that is opened says "list box" and the option; a named one is called by its name;
+- a text editor is "Notes entry."; the arrows read the character and the line under the caret,
+  Shift+Left says the character and "selected", Home "Text unselected.";
+- a status line (`text(..).live(Live::Polite)`) is said when its words change while the focus is
+  elsewhere: "Syncing 3 files", "Syncing 2 files";
+- the dialog of focus_ring: Tab says "Keep it", "Clear it", "Keep it" (the trap), nothing of the form;
+- the names of F1/S5: "Open Work push button.", "Sync Work check box partially checked.",
+  "Password password text." (nothing of what was typed in it), "Start at login toggle button".
+
+Not said, or odd:
+- the very first Tab from the window to the first widget (as in F1); in Orca's log it finds the
+  focus already moved when it handles the key and takes it without announcing. Not solved.
+- the option chosen with Return in an open list, and the new value of the closed list after it;
+- Page Down and End in a focused scrollable: nothing about how far it is scrolled;
+- "Hide the notice" was said when the button under the focus changed its name, as a live text is;
+- a field is called by its placeholder as its content when it is empty ("Computer name entry Mac.");
+- once, in an earlier run under load, Orca was 19 s late and said the first stops out of order;
+  that run is not kept.
+
+---- focus_ring ----
+17:21:40 said  Screen reader on.
+17:21:44 said  Focus ring frame.
+17:21:47       [key Tab]
+17:21:49       [type Ada]
+17:21:49 said  A
+17:21:49 said  d
+17:21:49 said  a
+17:21:51       [key shift+Left]
+17:21:51 said  a
+17:21:51 said  selected
+17:21:52       [key Tab]
+17:21:53 said  I agree with the terms check box not checked.
+17:21:54       [key space]
+17:21:54 said  checked
+17:21:56       [key Tab]
+17:21:56 said  Tell me when it is done toggle button not pressed.
+17:21:58       [key Tab]
+17:21:58 said  Monthly.
+17:21:58 said  selected radio button
+17:22:00       [key Tab]
+17:22:00 said  Yearly.
+17:22:00 said  not selected radio button
+17:22:02       [key Tab]
+17:22:02 said  Medium combo box.
+17:22:03       [key Return]
+17:22:04 said  list box
+17:22:04 said  Medium.
+17:22:05       [key Down]
+17:22:05 said  Large.
+17:22:07       [key Return]
+17:22:09       [key Tab]
+17:22:09 said  Volume slider 40.
+17:22:11       [key Right]
+17:22:11 said  41
+17:22:12       [key Home]
+17:22:13 said  0
+17:22:14       [key Tab]
+17:22:14 said  panel.
+17:22:14 said  These are the terms. They are longer than the box they are shown in, and nothing inside them takes the keyboard focus, so the box itself is a stop of the Tab key: with the focus on it the arrows, Page Up, Page Down, Space, Home and End scroll it. A person without a pointer can read them to their end before agreeing with them, which is the least that can be asked of terms.
+17:22:16       [key Down]
+17:22:18       [key Tab]
+17:22:18 said  Language combo box.
+17:22:18 said  list box
+17:22:18 said  Dutch.
+17:22:20       [type s]
+17:22:20 said  s
+17:22:20 said  list box
+17:22:20 said  English.
+17:22:22       [key Down]
+17:22:22 said  Persian.
+17:22:23       [key Tab]
+17:22:24 said  Notes entry.
+17:22:25       [type one]
+17:22:25 said  o
+17:22:26 said  n
+17:22:26 said  e
+17:22:27       [key Tab]
+17:22:28 said  Save push button.
+17:22:29       [key Tab]
+17:22:29 said  Cancel push button.
+17:22:31       [key Tab]
+17:22:31 said  Clear… push button.
+17:22:33       [key Return]
+17:22:33 said  Focus ring frame.
+17:22:35       [key Tab]
+17:22:35 said  Keep it push button.
+17:22:36       [key Tab]
+17:22:37 said  Clear it push button.
+17:22:38       [key Tab]
+17:22:38 said  Keep it push button.
+17:22:40       [key Escape]
+17:22:40 said  Focus ring frame.
+17:22:44 said  Screen reader off.
+
+---- screen_reader ----
+17:18:13 said  Screen reader on.
+17:18:17 said  Screen reader frame.
+17:18:20       [key Tab]
+17:18:22       [key Return]
+17:18:22 said  Syncing 3 files
+17:18:24       [key Tab]
+17:18:24 said  One file sent push button.
+17:18:26       [key Return]
+17:18:26 said  Syncing 2 files
+17:18:28       [key Tab]
+17:18:28 said  Show a notice push button.
+17:18:30       [key Return]
+17:18:30 said  Hide the notice
+17:18:31       [key Tab]
+17:18:32 said  Computer name entry Mac.
+17:18:33       [type Zoe]
+17:18:33 said  Z
+17:18:33 said  o
+17:18:33 said  e
+17:18:35       [key shift+Left]
+17:18:35 said  e
+17:18:35 said  selected
+17:18:37       [key Home]
+17:18:37 said  Text unselected.
+17:18:37 said  Z
+17:18:39       [key Right]
+17:18:39 said  o
+17:18:41       [key Tab]
+17:18:41 said  Notes entry.
+17:18:43       [type one]
+17:18:43 said  o
+17:18:43 said  n
+17:18:43 said  e
+17:18:45       [key Return]
+17:18:46       [type two]
+17:18:46 said  t
+17:18:47 said  w
+17:18:47 said  o
+17:18:48       [key Up]
+17:18:49 said  one
+17:18:50       [key Tab]
+17:18:50 said  How often to sync combo box.
+17:18:52       [key Return]
+17:18:54       [key Down]
+17:18:54 said  list box
+17:18:54 said  As files change.
+17:18:56       [key Return]
+17:18:58       [key Tab]
+17:18:58 said  Speed limit slider 10.
+17:18:59       [key Right]
+17:18:59 said  11
+17:19:01       [key Right]
+17:19:01 said  12
+17:19:03       [key Tab]
+17:19:03 said  panel.
+17:19:03 said  notes-01.txt was uploaded notes-02.txt was uploaded notes-03.txt was uploaded notes-04.txt was uploaded notes-05.txt was uploaded notes-06.txt was uploaded.
+17:19:05       [key Next]
+17:19:07       [key End]
+17:19:11 said  Screen reader off.
+
+---- accessible_names ----
+17:19:17 said  Screen reader on.
+17:19:20 said  Accessible names frame.
+17:19:24       [key Tab]
+17:19:26       [type me]
+17:19:26 said  m
+17:19:26 said  e
+17:19:27       [key Tab]
+17:19:28 said  Password password text.
+17:19:29       [type secret]
+17:19:32       [key Tab]
+17:19:32 said  Start at login toggle button not pressed.
+17:19:33       [key space]
+17:19:33 said  pressed
+17:19:35       [key Tab]
+17:19:35 said  Open Work push button.
+17:19:37       [key Return]
+17:19:37 said  Close Work push button.
+17:19:39       [key Tab]
+17:19:39 said  Sync Work check box partially checked.
+17:19:41       [key space]
+17:19:41 said  checked
+17:19:42       [key Tab]
+17:19:43 said  Open Photos push button.
+17:19:44       [key Tab]
+17:19:44 said  Sync Photos check box checked.
+17:19:46       [key Tab]
+17:19:46 said  Open Old push button.
+17:19:48       [key Tab]
+17:19:48 said  Sync Old check box not checked.
+17:19:50       [key Tab]
+17:19:50 said  Open Music push button.
+17:19:52       [key Tab]
+17:19:52 said  Sync Music check box checked.
+17:19:53       [key Tab]
+17:19:54 said  Open Letters push button.
+17:19:55       [key Tab]
+17:19:55 said  Sync Letters check box checked.
+17:19:57       [key Tab]
+17:19:57 said  Open Taxes push button.
+17:19:59       [key Tab]
+17:19:59 said  Sync Taxes check box not checked.
+17:20:01       [key Tab]
+17:20:01 said  Open Recipes push button.
+17:20:03       [key Tab]
+17:20:03 said  Sync Recipes check box checked.
+17:20:04       [key Tab]
+17:20:05 said  Open Drafts push button.
+17:20:06       [key Tab]
+17:20:06 said  Sync Drafts check box not checked.
+17:20:08       [key Tab]
+17:20:08 said  Send a report push button.
+17:20:10       [key Tab]
+17:20:10 said  Accessible names frame.
+17:20:12       [key Return]
+17:20:15 said  Screen reader off.

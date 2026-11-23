@@ -78,6 +78,7 @@ pub struct Scrollable<
     height: Length,
     direction: Direction,
     auto_scroll: bool,
+    is_tab_stop: bool,
     content: Element<'a, Message, Theme, Renderer>,
     on_scroll: Option<Box<dyn Fn(Viewport) -> Message + 'a>>,
     class: Theme::Class<'a>,
@@ -107,6 +108,7 @@ where
             height: Length::Shrink,
             direction: direction.into(),
             auto_scroll: false,
+            is_tab_stop: true,
             content: content.into(),
             on_scroll: None,
             class: Theme::default(),
@@ -226,6 +228,16 @@ where
             Direction::Both { .. } => {}
         }
 
+        self
+    }
+
+    /// Sets whether the [`Scrollable`] may be a stop of the Tab key.
+    ///
+    /// By default it is one when there is something to scroll and nothing
+    /// inside it takes the keyboard focus: the arrows, Page Up, Page Down,
+    /// Space, Home and End then scroll it. With `false` it never is.
+    pub fn tab_stop(mut self, is_tab_stop: bool) -> Self {
+        self.is_tab_stop = is_tab_stop;
         self
     }
 
@@ -556,8 +568,9 @@ where
         // to scroll and nothing inside it that takes the focus: otherwise a
         // person without a pointer could not read to its end. With a
         // focusable widget inside, that widget is the stop.
-        let is_focusable = (content_bounds.height > bounds.height
-            || content_bounds.width > bounds.width)
+        let is_focusable = self.is_tab_stop
+            && (content_bounds.height > bounds.height
+                || content_bounds.width > bounds.width)
             && !has_focusable(
                 self.content.as_widget_mut(),
                 &mut tree.children[0],

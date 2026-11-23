@@ -18,7 +18,9 @@
 use crate::UserInterface;
 use crate::core;
 use crate::core::widget::Id;
-use crate::core::widget::operation::accessible::{self, Accessible, Toggled};
+use crate::core::widget::operation::accessible::{
+    self, Accessible, Live, Selection, Toggled,
+};
 use crate::core::widget::operation::scrollable::AbsoluteOffset;
 use crate::core::widget::operation::{
     Focusable, Operation, Scrollable, TextInput,
@@ -49,15 +51,28 @@ pub enum Role {
     RadioButton,
     /// A list that opens to choose one of its options.
     ComboBox,
+    /// A field text is typed in, with a list of options that follows what
+    /// is typed.
+    EditableComboBox,
     /// A bar that shows how far something is.
     ProgressBar,
     /// A handle on a rail that chooses a number between two ends.
     Slider,
+    /// A field text is typed in over several lines.
+    TextEditor,
+    /// The open list of a [`Role::ComboBox`], or a menu.
+    Menu,
+    /// One option of a [`Role::Menu`].
+    MenuItem,
 }
 
 /// A widget, as assistive technology is told about it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
+    /// What assistive technology knows it by, from one [`Tree`] to the
+    /// next: see [`Tree::of`] for what it is made of. Zero until the
+    /// [`Tree`] is finished.
+    pub id: u64,
     /// What it is.
     pub role: Role,
     /// Its name; for a [`Role::Text`], the text itself.
@@ -72,6 +87,19 @@ pub struct Node {
     pub toggled: Option<Toggled>,
     /// Its value as a number, with the least and the most it can be.
     pub range: Option<(f32, f32, f32)>,
+    /// How far one step moves that number.
+    pub step: Option<f32>,
+    /// The caret and the selection in its text, in bytes: in
+    /// [`value`](Self::value), or in [`label`](Self::label) for a
+    /// [`Role::Text`].
+    pub selection: Option<Selection>,
+    /// Whether what it opens (its list, its menu) is open.
+    pub expanded: Option<bool>,
+    /// Whether it is the chosen one among others.
+    pub selected: Option<bool>,
+    /// Whether, and how, a change of its text is said without being asked
+    /// for: a status line.
+    pub live: Option<Live>,
     /// Whether it can be used.
     pub is_enabled: bool,
     /// Whether it takes part in keyboard focus.
@@ -104,12 +132,18 @@ impl Node {
     /// Creates a [`Node`] that is drawn where its layout puts it.
     pub fn new(role: Role, bounds: Rectangle) -> Self {
         Self {
+            id: 0,
             role,
             label: None,
             placeholder: None,
             value: None,
             toggled: None,
             range: None,
+            step: None,
+            selection: None,
+            expanded: None,
+            selected: None,
+            live: None,
             is_enabled: true,
             is_focusable: false,
             is_focused: false,
@@ -132,8 +166,29 @@ impl Tree {
     /// The index of the root: the window.
     pub const ROOT: usize = 0;
 
+    /// The [`Node::id`] of the window.
+    pub const ROOT_ID: u64 = 1;
+
     /// Builds the [`Tree`] of the given [`UserInterface`], under a window
     /// with the given title and bounds.
+    ///
+    /// Each [`Node`] has an [`id`](Node::id) that stays the same from one
+    /// [`Tree`] to the next, so that a screen reader keeps its place when
+    /// the interface is laid out again, scrolled, or changes around it:
+    ///
+    /// - a widget that was given an [`Id`] (`.id("save")`) is known by it,
+    ///   wherever it goes (the first one, if several have the same);
+    /// - any other is known by what it is inside of, what it is, what it
+    ///   is called, and which one of those it is: the second button
+    ///   "Remove" of the list. A piece of text is known by its words; a
+    ///   field or a list by its name, not by what is typed or chosen;
+    /// - a status line ([`Node::live`]) is known by being the first (the
+    ///   second, ...) status line of what it is inside of, since its words
+    ///   are what changes.
+    ///
+    /// So a button that changes its name is another button to a screen
+    /// reader, and one that only moves is the same; give a widget an
+    /// [`Id`] where that is not what is meant.
     pub fn of<Message, Theme, Renderer>(
         ui: &mut UserInterface<'_, Message, Theme, Renderer>,
         renderer: &Renderer,
@@ -148,6 +203,7 @@ impl Tree {
 
         let mut collector = Collector {
             nodes: vec![window],
+            ids: vec![None],
             parents: vec![Self::ROOT],
             entered_next: None,
             focus: None,
@@ -157,6 +213,22 @@ impl Tree {
         ui.operate(renderer, &mut collector);
 
         collector.finish()
+    }
+
+    /// Makes a [`Tree`] of nodes put together by hand (the first one is
+    /// the window, [`Node::children`] are indices, a parent stands before
+    /// what is inside it) and gives each its [`Node::id`].
+    pub fn from_nodes(mut nodes: Vec<Node>) -> Self {
+        let ids = vec![None; nodes.len()];
+        identify(&mut nodes, &ids);
+
+        Self { nodes }
+    }
+
+    /// The index of the node with the given [`Node::id`], if it is in the
+    /// [`Tree`].
+    pub fn index_of(&self, id: u64) -> Option<usize> {
+        self.nodes.iter().position(|node| node.id == id)
     }
 
     /// The index of the node that has the keyboard focus, if any.
@@ -243,6 +315,31 @@ impl Tree {
                 out.push_str(&format!(" {value} in {min}..={max}"));
             }
 
+            if let Some(selection) = node.selection {
+                if selection.anchor == selection.focus {
+                    out.push_str(&format!(" caret={}", selection.focus));
+                } else {
+                    out.push_str(&format!(
+                        " selected={}..{}",
+                        selection.anchor, selection.focus
+                    ));
+                }
+            }
+
+            match node.expanded {
+                Some(true) => out.push_str(" open"),
+                Some(false) => out.push_str(" closed"),
+                None => {}
+            }
+
+            if node.selected == Some(true) {
+                out.push_str(" chosen");
+            }
+
+            if let Some(live) = node.live {
+                out.push_str(&format!(" live={live:?}"));
+            }
+
             if !node.is_enabled {
                 out.push_str(" disabled");
             }
@@ -266,6 +363,8 @@ impl Tree {
 
 struct Collector {
     nodes: Vec<Node>,
+    /// The [`Id`] each node was given as a widget, if any.
+    ids: Vec<Option<Id>>,
     /// The node the widgets visited now are inside of, innermost last.
     parents: Vec<usize>,
     /// The node that the next `traverse` goes into: a widget that described
@@ -280,7 +379,7 @@ struct Collector {
 }
 
 impl Collector {
-    fn push(&mut self, mut node: Node) -> usize {
+    fn push(&mut self, id: Option<&Id>, mut node: Node) -> usize {
         if let Some((bounds, is_focused)) = self.focus.take()
             && bounds == node.layout
         {
@@ -295,6 +394,7 @@ impl Collector {
         let parent = *self.parents.last().unwrap_or(&Tree::ROOT);
 
         self.nodes.push(node);
+        self.ids.push(id.cloned());
         self.nodes[parent].children.push(index);
         self.entered_next = None;
 
@@ -347,7 +447,10 @@ impl Collector {
             pending.extend(self.nodes[index].children.iter().rev());
         }
 
-        let nodes = order
+        let ids: Vec<_> =
+            order.iter().map(|index| self.ids[*index].clone()).collect();
+
+        let mut nodes: Vec<Node> = order
             .into_iter()
             .map(|index| {
                 let mut node = self.nodes[index].clone();
@@ -359,6 +462,8 @@ impl Collector {
                 node
             })
             .collect();
+
+        identify(&mut nodes, &ids);
 
         Tree { nodes }
     }
@@ -398,13 +503,15 @@ impl Operation for Collector {
 
     fn scrollable(
         &mut self,
-        _id: Option<&Id>,
+        id: Option<&Id>,
         bounds: Rectangle,
         content_bounds: Rectangle,
         translation: Vector,
         _state: &mut dyn Scrollable,
     ) {
-        self.focus = None;
+        // A scrollable that takes the keyboard focus told so just before
+        let focus = self.focus.take().filter(|(at, _)| *at == bounds);
+        self.focus = focus;
 
         let mut node = Node::new(Role::ScrollArea, bounds);
         node.scroll = Some(Scroll {
@@ -412,7 +519,7 @@ impl Operation for Collector {
             content: content_bounds.size(),
         });
 
-        let index = self.push(node);
+        let index = self.push(id, node);
 
         // What it scrolls is visited in the `traverse` that follows
         self.entered_next = Some(index);
@@ -442,7 +549,7 @@ impl Operation for Collector {
 
     fn text_input(
         &mut self,
-        _id: Option<&Id>,
+        id: Option<&Id>,
         bounds: Rectangle,
         state: &mut dyn TextInput,
     ) {
@@ -459,20 +566,21 @@ impl Operation for Collector {
         let mut node = Node::new(Role::TextInput, bounds);
         node.value = Some(state.text().to_owned());
 
-        let _ = self.push(node);
+        let _ = self.push(id, node);
     }
 
-    fn text(&mut self, _id: Option<&Id>, bounds: Rectangle, text: &str) {
+    fn text(&mut self, id: Option<&Id>, bounds: Rectangle, text: &str) {
         // The label of a widget that described itself at the same place
         // (a check box, a switch) is not told a second time: the widget
         // is called by it, or by the name it was given instead
         let parent = *self.parents.last().unwrap_or(&Tree::ROOT);
 
         if let Some(last) = self.nodes[parent].children.last().copied()
-            && !matches!(
-                self.nodes[last].role,
-                Role::Text | Role::ScrollArea | Role::Button
-            )
+            && !matches!(self.nodes[last].role, Role::ScrollArea | Role::Button)
+            // A piece of text that described itself (its selection, that
+            // it is a status) said these very words
+            && (self.nodes[last].role != Role::Text
+                || self.nodes[last].label.as_deref() == Some(text))
             && self.nodes[last].layout == bounds
             && self.nodes[last].label.is_some()
         {
@@ -484,12 +592,12 @@ impl Operation for Collector {
         let mut node = Node::new(Role::Text, bounds);
         node.label = Some(text.to_owned());
 
-        let _ = self.push(node);
+        let _ = self.push(id, node);
     }
 
     fn accessible(
         &mut self,
-        _id: Option<&Id>,
+        id: Option<&Id>,
         bounds: Rectangle,
         accessible: Accessible<'_>,
     ) {
@@ -499,10 +607,15 @@ impl Operation for Collector {
             accessible::Role::Switch => Role::Switch,
             accessible::Role::RadioButton => Role::RadioButton,
             accessible::Role::ComboBox => Role::ComboBox,
+            accessible::Role::EditableComboBox => Role::EditableComboBox,
             accessible::Role::ProgressBar => Role::ProgressBar,
             accessible::Role::TextInput => Role::TextInput,
             accessible::Role::SecureTextInput => Role::SecureTextInput,
             accessible::Role::Slider => Role::Slider,
+            accessible::Role::TextEditor => Role::TextEditor,
+            accessible::Role::Text => Role::Text,
+            accessible::Role::Menu => Role::Menu,
+            accessible::Role::MenuItem => Role::MenuItem,
             // A role of a later version: told as nothing in particular
             _ => return,
         };
@@ -522,19 +635,107 @@ impl Operation for Collector {
             .map(str::to_owned);
         node.toggled = accessible.toggled;
         node.range = accessible.range;
+        node.step = accessible.step;
+        node.selection = accessible
+            .selection
+            .filter(|_| role != Role::SecureTextInput);
+        node.expanded = accessible.expanded;
+        node.selected = accessible.selected;
+        node.live = accessible.live;
         node.is_enabled = accessible.is_enabled;
 
-        let index = self.push(node);
+        let index = self.push(id, node);
 
-        // Only a button has children that are widgets
-        if role == Role::Button {
+        // Only a button and a menu have children that are widgets
+        if matches!(role, Role::Button | Role::Menu) {
             self.entered_next = Some(index);
         }
     }
 }
 
 fn is_field(role: Role) -> bool {
-    matches!(role, Role::TextInput | Role::SecureTextInput)
+    matches!(
+        role,
+        Role::TextInput
+            | Role::SecureTextInput
+            | Role::TextEditor
+            | Role::EditableComboBox
+    )
+}
+
+/// Gives every node its [`Node::id`]; see [`Tree::of`]. The nodes are in
+/// the order of the tree, a parent before what is inside it.
+fn identify(nodes: &mut [Node], ids: &[Option<Id>]) {
+    use std::collections::{HashMap, HashSet};
+    use std::hash::{Hash, Hasher};
+
+    /// FNV-1a: the same number for the same widget in every run and on
+    /// every system, which the hasher of the standard library does not
+    /// promise.
+    struct Fnv(u64);
+
+    impl Hasher for Fnv {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+
+        fn write(&mut self, bytes: &[u8]) {
+            for byte in bytes {
+                self.0 ^= u64::from(*byte);
+                self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+
+    fn hash(value: impl Hash) -> u64 {
+        let mut hasher = Fnv(0xcbf2_9ce4_8422_2325);
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    let mut parents = vec![Tree::ROOT; nodes.len()];
+
+    for (index, node) in nodes.iter().enumerate() {
+        for child in &node.children {
+            parents[*child] = index;
+        }
+    }
+
+    let mut used = HashSet::new();
+    // How many of a kind were seen inside a node
+    let mut seen: HashMap<u64, u32> = HashMap::new();
+
+    for index in 0..nodes.len() {
+        let mut id = if index == Tree::ROOT {
+            Tree::ROOT_ID
+        } else if let Some(id) = &ids[index]
+            && !used.contains(&hash(("widget", id)))
+        {
+            hash(("widget", id))
+        } else {
+            let node = &nodes[index];
+            let parent = nodes[parents[index]].id;
+
+            let kind = if node.live.is_some() {
+                // The words of a status line are what changes
+                hash((parent, node.role, "live"))
+            } else {
+                hash((parent, node.role, &node.label))
+            };
+
+            let nth = seen.entry(kind).or_default();
+            *nth += 1;
+
+            hash((kind, *nth))
+        };
+
+        // Never the same for two, and never zero
+        while id == 0 || !used.insert(id) {
+            id = hash((id, "again"));
+        }
+
+        nodes[index].id = id;
+    }
 }
 
 /// How to bring a node of a [`Tree`] into view: by how much each scroll
@@ -655,6 +856,135 @@ where
     true
 }
 
+/// Scrolls the [`Role::ScrollArea`] with the given index of `tree` by the
+/// given amount, as far as it goes. Returns whether it is a scroll area.
+pub fn scroll_by<Message, Theme, Renderer>(
+    tree: &Tree,
+    index: usize,
+    by: Vector,
+    ui: &mut UserInterface<'_, Message, Theme, Renderer>,
+    renderer: &Renderer,
+) -> bool
+where
+    Renderer: core::Renderer,
+{
+    let Some(area) = tree.nodes.get(index) else {
+        return false;
+    };
+
+    if area.role != Role::ScrollArea {
+        return false;
+    }
+
+    ui.operate(
+        renderer,
+        &mut Reveal {
+            steps: vec![(area.layout, AbsoluteOffset { x: by.x, y: by.y })],
+        },
+    );
+
+    true
+}
+
+/// Moves the number of the node with the given index of `tree` (a
+/// [`Role::Slider`]) by so many of its steps, up or down: the node is given
+/// the keyboard focus and the arrow keys a person would press. The messages
+/// of the widget are added to `messages`. Returns whether it is a slider
+/// that can be used.
+pub fn step<Message, Theme, Renderer>(
+    tree: &Tree,
+    index: usize,
+    steps: i32,
+    ui: &mut UserInterface<'_, Message, Theme, Renderer>,
+    renderer: &mut Renderer,
+    clipboard: &mut dyn core::Clipboard,
+    messages: &mut Vec<Message>,
+) -> bool
+where
+    Renderer: core::Renderer,
+{
+    use crate::core::keyboard;
+    use crate::core::keyboard::key;
+
+    let Some(node) = tree.nodes.get(index) else {
+        return false;
+    };
+
+    if node.role != Role::Slider || !node.is_enabled || !node.is_focusable {
+        return false;
+    }
+
+    focus(tree, index, ui, renderer);
+
+    let named = if steps < 0 {
+        key::Named::ArrowDown
+    } else {
+        key::Named::ArrowUp
+    };
+
+    let press = core::Event::Keyboard(keyboard::Event::KeyPressed {
+        key: keyboard::Key::Named(named),
+        modified_key: keyboard::Key::Named(named),
+        physical_key: key::Physical::Unidentified(
+            key::NativeCode::Unidentified,
+        ),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::default(),
+        text: None,
+        repeat: false,
+    });
+
+    for _ in 0..steps.unsigned_abs().min(10_000) {
+        let _ = ui.update(
+            std::slice::from_ref(&press),
+            core::mouse::Cursor::Unavailable,
+            renderer,
+            clipboard,
+            messages,
+        );
+    }
+
+    true
+}
+
+/// How many steps of the node take its number to the given one (never past
+/// its ends), for [`step`].
+pub fn steps_to(node: &Node, number: f32) -> i32 {
+    let (Some((value, min, max)), Some(step)) = (node.range, node.step) else {
+        return 0;
+    };
+
+    if step <= 0.0 {
+        return 0;
+    }
+
+    ((number.clamp(min, max) - value) / step).round() as i32
+}
+
+/// Takes the number of the node with the given index of `tree` (a
+/// [`Role::Slider`]) to the given number, as near as its steps come; see
+/// [`step`]. Returns whether it is a slider that can be used.
+pub fn set_number<Message, Theme, Renderer>(
+    tree: &Tree,
+    index: usize,
+    number: f32,
+    ui: &mut UserInterface<'_, Message, Theme, Renderer>,
+    renderer: &mut Renderer,
+    clipboard: &mut dyn core::Clipboard,
+    messages: &mut Vec<Message>,
+) -> bool
+where
+    Renderer: core::Renderer,
+{
+    let Some(node) = tree.nodes.get(index) else {
+        return false;
+    };
+
+    let steps = steps_to(node, number);
+
+    step(tree, index, steps, ui, renderer, clipboard, messages)
+}
+
 /// Presses the node with the given index of `tree` in the user interface
 /// the [`Tree`] was built from, as a click of the pointer in the middle of
 /// what can be seen of it would; what is scrolled out of view is scrolled
@@ -685,11 +1015,14 @@ where
     // Where it is drawn now
     let now = Tree::of(ui, renderer, "", tree.nodes[Tree::ROOT].bounds);
 
-    let Some(node) = now.nodes.get(index) else {
+    // The same widget, wherever it is in the tree now
+    let Some(index) = now.index_of(asked.id) else {
         return false;
     };
 
-    if node.role != asked.role || node.layout != asked.layout {
+    let node = &now.nodes[index];
+
+    if node.role != asked.role {
         return false;
     }
 
@@ -699,6 +1032,11 @@ where
 
     let _ = ui.update(
         &[
+            // What follows the pointer (the options of an open list) has
+            // to see it arrive first
+            core::Event::Mouse(mouse::Event::CursorMoved {
+                position: seen.center(),
+            }),
             core::Event::Mouse(mouse::Event::ButtonPressed(
                 mouse::Button::Left,
             )),

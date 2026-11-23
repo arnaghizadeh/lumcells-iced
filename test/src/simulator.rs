@@ -258,6 +258,43 @@ where
         )
     }
 
+    /// Sets the number of the node with the given index of `tree` (a
+    /// slider) the way a screen reader does. Returns whether it is one.
+    pub fn accessibility_set_number(
+        &mut self,
+        tree: &crate::runtime::accessibility::Tree,
+        index: usize,
+        number: f32,
+    ) -> bool {
+        crate::runtime::accessibility::set_number(
+            tree,
+            index,
+            number,
+            &mut self.raw,
+            &mut self.renderer,
+            &mut self.clipboard,
+            &mut self.messages,
+        )
+    }
+
+    /// Scrolls the node with the given index of `tree` (a scroll area) by
+    /// the given amount the way a screen reader does. Returns whether it
+    /// is one.
+    pub fn accessibility_scroll(
+        &mut self,
+        tree: &crate::runtime::accessibility::Tree,
+        index: usize,
+        by: core::Vector,
+    ) -> bool {
+        crate::runtime::accessibility::scroll_by(
+            tree,
+            index,
+            by,
+            &mut self.raw,
+            &self.renderer,
+        )
+    }
+
     /// Returns what the widgets of the [`Simulator`] wrote last to the given
     /// kind of clipboard, if anything.
     ///

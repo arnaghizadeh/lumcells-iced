@@ -228,16 +228,42 @@ where
 
         let state = state.downcast_mut::<State<Key>>();
 
-        tree::diff_children_custom_with_search(
-            children,
-            &self.children,
-            |tree, child| child.as_widget().diff(tree),
-            |index| {
-                self.keys.get(index).or_else(|| self.keys.last()).copied()
-                    != Some(state.keys[index])
-            },
-            |child| Tree::new(child.as_widget()),
-        );
+        // Each child takes the state of the child that had its key, wherever
+        // that one stood: one that is put in or taken out in the middle
+        // leaves the others what they hold. (The search of
+        // `tree::diff_children_custom_with_search` took a child put in the
+        // middle for one added at the end, and handed every child after it
+        // the state of another widget.)
+        let mut before: Vec<Option<Tree>> =
+            std::mem::take(children).into_iter().map(Some).collect();
+
+        *children = self
+            .children
+            .iter()
+            .zip(&self.keys)
+            .enumerate()
+            .map(|(index, (child, key))| {
+                // Most of the time nothing moved
+                let at = if state.keys.get(index) == Some(key) {
+                    Some(index)
+                } else {
+                    state.keys.iter().position(|candidate| candidate == key)
+                };
+
+                match at
+                    .and_then(|at| before.get_mut(at))
+                    .and_then(Option::take)
+                {
+                    Some(mut tree) => {
+                        // Another kind of widget under the same key begins
+                        // anew
+                        tree.diff(child.as_widget());
+                        tree
+                    }
+                    None => Tree::new(child.as_widget()),
+                }
+            })
+            .collect();
 
         if state.keys != self.keys {
             state.keys.clone_from(&self.keys);
@@ -394,5 +420,151 @@ where
 {
     fn from(column: Column<'a, Key, Message, Theme, Renderer>) -> Self {
         Self::new(column)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::core::widget::tree::{State, Tag};
+    use crate::core::{Element, Length, Size, Widget};
+
+    /// A widget that holds something: what it holds says which widget it
+    /// was first.
+    struct Holder<const KIND: u8>;
+
+    struct Held<const KIND: u8>(u32);
+
+    impl<const KIND: u8> Widget<(), (), ()> for Holder<KIND> {
+        fn tag(&self) -> Tag {
+            Tag::of::<Held<KIND>>()
+        }
+
+        fn state(&self) -> State {
+            State::new(Held::<KIND>(0))
+        }
+
+        fn size(&self) -> Size<Length> {
+            Size::new(Length::Shrink, Length::Shrink)
+        }
+
+        fn layout(
+            &mut self,
+            _tree: &mut Tree,
+            _renderer: &(),
+            _limits: &layout::Limits,
+        ) -> layout::Node {
+            layout::Node::new(Size::ZERO)
+        }
+
+        fn draw(
+            &self,
+            tree: &Tree,
+            _renderer: &mut (),
+            _theme: &(),
+            _style: &renderer::Style,
+            _layout: Layout<'_>,
+            _cursor: mouse::Cursor,
+            _viewport: &Rectangle,
+        ) {
+            // What a widget does with a state that is another's
+            let _ = tree.state.downcast_ref::<Held<KIND>>();
+        }
+    }
+
+    fn column(keys: &[(u32, u8)]) -> Column<'static, u32, (), (), ()> {
+        Column::with_children(keys.iter().map(|(key, kind)| {
+            let child: Element<'static, (), (), ()> = match kind {
+                0 => Element::new(Holder::<0>),
+                _ => Element::new(Holder::<1>),
+            };
+
+            (*key, child)
+        }))
+    }
+
+    /// What each child holds: the key of the widget its state was made
+    /// for (set by the test after the first diff), or 0 for a new state.
+    fn held(tree: &Tree, keys: &[(u32, u8)]) -> Vec<u32> {
+        tree.children
+            .iter()
+            .zip(keys)
+            .map(|(child, (_, kind))| match kind {
+                0 => child.state.downcast_ref::<Held<0>>().0,
+                _ => child.state.downcast_ref::<Held<1>>().0,
+            })
+            .collect()
+    }
+
+    fn mark(tree: &mut Tree, keys: &[(u32, u8)]) {
+        for (child, (key, kind)) in tree.children.iter_mut().zip(keys) {
+            match kind {
+                0 => child.state.downcast_mut::<Held<0>>().0 = *key,
+                _ => child.state.downcast_mut::<Held<1>>().0 = *key,
+            }
+        }
+    }
+
+    fn after(before: &[(u32, u8)], now: &[(u32, u8)]) -> Vec<u32> {
+        let first = column(before);
+        let mut tree = Tree::new(&first as &dyn Widget<(), (), ()>);
+        mark(&mut tree, before);
+
+        let second = column(now);
+        Widget::diff(&second, &mut tree);
+
+        held(&tree, now)
+    }
+
+    #[test]
+    fn a_child_put_in_the_middle_leaves_the_others_their_state() {
+        // Widgets of two kinds, as an interface has: handing one the state
+        // of the other is a panic ("Downcast widget state")
+        let before = [(1, 0), (2, 1), (3, 0), (4, 1)];
+        let now = [(1, 0), (9, 0), (2, 1), (3, 0), (4, 1)];
+
+        assert_eq!(after(&before, &now), [1, 0, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_child_taken_out_of_the_middle_leaves_the_others_their_state() {
+        let before = [(1, 0), (9, 0), (2, 1), (3, 0), (4, 1)];
+        let now = [(1, 0), (2, 1), (3, 0), (4, 1)];
+
+        assert_eq!(after(&before, &now), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn children_at_the_ends_and_in_another_order() {
+        let before = [(1, 0), (2, 1), (3, 0)];
+
+        // Added at the end, at the start
+        assert_eq!(
+            after(&before, &[(1, 0), (2, 1), (3, 0), (4, 1)]),
+            [1, 2, 3, 0]
+        );
+        assert_eq!(
+            after(&before, &[(4, 1), (1, 0), (2, 1), (3, 0)]),
+            [0, 1, 2, 3]
+        );
+        // Several at once, and one gone
+        assert_eq!(
+            after(&before, &[(7, 1), (1, 0), (8, 0), (3, 0), (9, 1)]),
+            [0, 1, 0, 3, 0]
+        );
+        // Turned round
+        assert_eq!(after(&before, &[(3, 0), (2, 1), (1, 0)]), [3, 2, 1]);
+        // Everything gone, everything new
+        assert_eq!(after(&before, &[]), [] as [u32; 0]);
+        assert_eq!(after(&[], &before), [0, 0, 0]);
+    }
+
+    #[test]
+    fn another_kind_of_widget_under_a_key_begins_anew() {
+        let before = [(1, 0), (2, 1)];
+        let now = [(1, 1), (2, 1)];
+
+        assert_eq!(after(&before, &now), [0, 2]);
     }
 }

@@ -9,6 +9,7 @@
 //! What assistive technology asks for comes back as [`Request`]s: a press
 //! of a widget (its default action) and the keyboard focus on a widget.
 use crate::runtime::UserInterface;
+use crate::runtime::accessibility::Node as TreeNode;
 use crate::runtime::accessibility::{Role, Tree};
 
 use accesskit::{
@@ -28,6 +29,14 @@ pub enum Request {
     Focus(Target),
     /// Scroll what is around a widget so that it can be seen.
     Reveal(Target),
+    /// Set the number of a widget that has one (a slider).
+    SetNumber(Target, f64),
+    /// Move the number of a widget by so many of its steps.
+    Step(Target, i32),
+    /// Scroll a scroll area by so many pages, to the right and down.
+    ScrollPages(Target, f32, f32),
+    /// Scroll a scroll area to an offset.
+    ScrollTo(Target, f32, f32),
 }
 
 /// The widget a [`Request`] is about: a node of the tree assistive
@@ -171,19 +180,53 @@ impl Adapter {
         requests
             .into_iter()
             .filter_map(|request| {
-                let index = usize::try_from(request.target_node.0).ok()?;
+                // A request for a line of text is for the field it is in
+                let index =
+                    tree.index_of(request.target_node.0).or_else(|| {
+                        tree.nodes.iter().position(|node| {
+                            (0..lines(node).count()).any(|line| {
+                                run_id(node, line) == request.target_node
+                            })
+                        })
+                    })?;
 
                 let target = Target {
                     tree: tree.clone(),
                     index,
                 };
 
-                let _ = tree.nodes.get(index)?;
-
-                match request.action {
-                    Action::Click => Some(Request::Press(target)),
-                    Action::Focus => Some(Request::Focus(target)),
-                    Action::ScrollIntoView => Some(Request::Reveal(target)),
+                match (request.action, request.data) {
+                    (Action::Click, _) => Some(Request::Press(target)),
+                    (Action::Focus, _) => Some(Request::Focus(target)),
+                    (Action::ScrollIntoView, _) => {
+                        Some(Request::Reveal(target))
+                    }
+                    (
+                        Action::SetValue,
+                        Some(accesskit::ActionData::NumericValue(number)),
+                    ) => Some(Request::SetNumber(target, number)),
+                    (Action::Increment, _) => Some(Request::Step(target, 1)),
+                    (Action::Decrement, _) => Some(Request::Step(target, -1)),
+                    (Action::ScrollUp, _) => {
+                        Some(Request::ScrollPages(target, 0.0, -1.0))
+                    }
+                    (Action::ScrollDown, _) => {
+                        Some(Request::ScrollPages(target, 0.0, 1.0))
+                    }
+                    (Action::ScrollLeft, _) => {
+                        Some(Request::ScrollPages(target, -1.0, 0.0))
+                    }
+                    (Action::ScrollRight, _) => {
+                        Some(Request::ScrollPages(target, 1.0, 0.0))
+                    }
+                    (
+                        Action::SetScrollOffset,
+                        Some(accesskit::ActionData::SetScrollOffset(offset)),
+                    ) => Some(Request::ScrollTo(
+                        target,
+                        offset.x as f32,
+                        offset.y as f32,
+                    )),
                     _ => None,
                 }
             })
@@ -216,15 +259,199 @@ pub fn perform<Message, Theme, Renderer>(
         Request::Reveal(Target { tree, index }) => {
             let _ = accessibility::scroll_into_view(&tree, index, ui, renderer);
         }
+        Request::SetNumber(Target { tree, index }, number) => {
+            let _ = accessibility::set_number(
+                &tree,
+                index,
+                number as f32,
+                ui,
+                renderer,
+                clipboard,
+                messages,
+            );
+        }
+        Request::Step(Target { tree, index }, steps) => {
+            let _ = accessibility::step(
+                &tree, index, steps, ui, renderer, clipboard, messages,
+            );
+        }
+        Request::ScrollPages(Target { tree, index }, x, y) => {
+            if let Some(area) = tree.nodes.get(index) {
+                let _ = accessibility::scroll_by(
+                    &tree,
+                    index,
+                    crate::core::Vector::new(
+                        x * area.bounds.width,
+                        y * area.bounds.height,
+                    ),
+                    ui,
+                    renderer,
+                );
+            }
+        }
+        Request::ScrollTo(Target { tree, index }, x, y) => {
+            if let Some(scroll) =
+                tree.nodes.get(index).and_then(|area| area.scroll)
+            {
+                let _ = accessibility::scroll_by(
+                    &tree,
+                    index,
+                    crate::core::Vector::new(x, y) - scroll.offset,
+                    ui,
+                    renderer,
+                );
+            }
+        }
     }
 }
 
-/// The identifier of a node is its place in the [`Tree`].
-fn node_id(index: usize) -> NodeId {
-    NodeId(index as u64)
+/// The identifier of a node is its [`id`](crate::runtime::accessibility::Node::id):
+/// the same from one tree to the next.
+fn node_id(tree: &Tree, index: usize) -> NodeId {
+    NodeId(tree.nodes[index].id)
+}
+
+/// Whether the node holds text a caret moves in, which assistive technology
+/// is given line by line.
+fn has_lines(node: &TreeNode) -> bool {
+    match node.role {
+        Role::TextInput | Role::TextEditor | Role::EditableComboBox => true,
+        // A piece of text with a selection in it
+        Role::Text => node.selection.is_some(),
+        _ => false,
+    }
+}
+
+/// The text of a node that has lines: what is typed in a field, the words
+/// of a piece of text.
+fn content(node: &TreeNode) -> &str {
+    match node.role {
+        Role::Text => node.label.as_deref(),
+        _ => node.value.as_deref(),
+    }
+    .unwrap_or_default()
+}
+
+/// The lines of a node that has them, each with the byte it starts at and
+/// with its line feed. A field with nothing in it has one empty line, for
+/// the caret to be in.
+fn lines(node: &TreeNode) -> impl Iterator<Item = (usize, &str)> {
+    let text = if has_lines(node) {
+        Some(content(node))
+    } else {
+        None
+    };
+
+    let mut start = 0;
+
+    text.into_iter().flat_map(move |text| {
+        let mut lines: Vec<_> = text
+            .split_inclusive('\n')
+            .map(|line| {
+                let at = start;
+                start += line.len();
+                (at, line)
+            })
+            .collect();
+
+        // The caret can stand after the last line feed
+        if text.is_empty() || text.ends_with('\n') {
+            lines.push((text.len(), ""));
+        }
+
+        lines
+    })
+}
+
+/// The identifier of a line of a node.
+fn run_id(node: &TreeNode, line: usize) -> NodeId {
+    NodeId(
+        node.id
+            .rotate_left(21)
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .wrapping_add(line as u64 + 1)
+            | 1 << 63,
+    )
+}
+
+/// Where a byte of the text of a node is, for AccessKit: the line, and the
+/// character (as a person counts them) in it.
+fn position(node: &TreeNode, byte: usize) -> Option<accesskit::TextPosition> {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    let (line, (start, text)) = lines(node)
+        .enumerate()
+        .take_while(|(_, (start, _))| *start <= byte)
+        .last()?;
+
+    let inside = byte.saturating_sub(start).min(text.len());
+
+    Some(accesskit::TextPosition {
+        node: run_id(node, line),
+        character_index: text
+            .grapheme_indices(true)
+            .take_while(|(at, _)| *at < inside)
+            .count(),
+    })
+}
+
+/// A line of text as AccessKit wants it: its characters and where its
+/// words begin.
+fn run(node: &TreeNode, text: &str) -> Node {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    let mut raw = Node::new(accesskit::Role::TextRun);
+
+    raw.set_bounds(accesskit::Rect {
+        x0: f64::from(node.bounds.x),
+        y0: f64::from(node.bounds.y),
+        x1: f64::from(node.bounds.x + node.bounds.width),
+        y1: f64::from(node.bounds.y + node.bounds.height),
+    });
+    raw.set_value(text);
+    raw.set_text_direction(accesskit::TextDirection::LeftToRight);
+
+    let starts: Vec<usize> =
+        text.grapheme_indices(true).map(|(at, _)| at).collect();
+
+    raw.set_character_lengths(
+        text.graphemes(true)
+            .map(|character| character.len().min(255) as u8)
+            .collect::<Vec<_>>(),
+    );
+
+    // Where the characters are drawn is not known here: they are told as
+    // sharing the width of the line evenly, so that a reader that asks for
+    // the place of the caret gets one inside the field
+    let width = node.bounds.width / starts.len().max(1) as f32;
+
+    raw.set_character_positions(
+        (0..starts.len())
+            .map(|i| i as f32 * width)
+            .collect::<Vec<_>>(),
+    );
+    raw.set_character_widths(vec![width; starts.len()]);
+
+    raw.set_word_starts(
+        text.unicode_word_indices()
+            .filter_map(|(at, _)| {
+                // The first word begins the line: that is implied
+                (at > 0)
+                    .then(|| starts.binary_search(&at).ok())
+                    .flatten()
+                    .and_then(|character| u8::try_from(character).ok())
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    raw
 }
 
 /// Turns a [`Tree`] into what AccessKit wants: every node, every time.
+///
+/// A node keeps its identifier from one tree to the next (see
+/// [`Tree::of`]), so AccessKit tells assistive technology only what
+/// changed, and a screen reader stays where it was.
 pub fn tree_update(tree: &Tree, scale_factor: f64) -> TreeUpdate {
     // Which nodes are inside of something that scrolls
     let mut is_scrolled = vec![false; tree.nodes.len()];
@@ -239,147 +466,205 @@ pub fn tree_update(tree: &Tree, scale_factor: f64) -> TreeUpdate {
         }
     }
 
-    let nodes = tree
-        .nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| {
-            let role = match node.role {
-                Role::Window => accesskit::Role::Window,
-                Role::Text => accesskit::Role::Label,
-                Role::TextInput => accesskit::Role::TextInput,
-                Role::SecureTextInput => accesskit::Role::PasswordInput,
-                Role::ScrollArea => accesskit::Role::ScrollView,
-                Role::Button => accesskit::Role::Button,
-                Role::CheckBox => accesskit::Role::CheckBox,
-                Role::Switch => accesskit::Role::Switch,
-                Role::RadioButton => accesskit::Role::RadioButton,
-                Role::ComboBox => accesskit::Role::ComboBox,
-                Role::ProgressBar => accesskit::Role::ProgressIndicator,
-                Role::Slider => accesskit::Role::Slider,
-                _ => accesskit::Role::GenericContainer,
-            };
+    let mut nodes = Vec::with_capacity(tree.nodes.len());
 
-            let mut raw = Node::new(role);
+    for (index, node) in tree.nodes.iter().enumerate() {
+        let role = match node.role {
+            Role::Window => accesskit::Role::Window,
+            Role::Text => accesskit::Role::Label,
+            Role::TextInput => accesskit::Role::TextInput,
+            Role::SecureTextInput => accesskit::Role::PasswordInput,
+            Role::TextEditor => accesskit::Role::MultilineTextInput,
+            Role::ScrollArea => accesskit::Role::ScrollView,
+            Role::Button => accesskit::Role::Button,
+            Role::CheckBox => accesskit::Role::CheckBox,
+            Role::Switch => accesskit::Role::Switch,
+            Role::RadioButton => accesskit::Role::RadioButton,
+            Role::ComboBox => accesskit::Role::ComboBox,
+            Role::EditableComboBox => accesskit::Role::EditableComboBox,
+            Role::ProgressBar => accesskit::Role::ProgressIndicator,
+            Role::Slider => accesskit::Role::Slider,
+            Role::Menu => accesskit::Role::ListBox,
+            Role::MenuItem => accesskit::Role::ListBoxOption,
+            _ => accesskit::Role::GenericContainer,
+        };
 
-            raw.set_bounds(accesskit::Rect {
-                x0: f64::from(node.bounds.x),
-                y0: f64::from(node.bounds.y),
-                x1: f64::from(node.bounds.x + node.bounds.width),
-                y1: f64::from(node.bounds.y + node.bounds.height),
+        let mut raw = Node::new(role);
+
+        raw.set_bounds(accesskit::Rect {
+            x0: f64::from(node.bounds.x),
+            y0: f64::from(node.bounds.y),
+            x1: f64::from(node.bounds.x + node.bounds.width),
+            y1: f64::from(node.bounds.y + node.bounds.height),
+        });
+
+        // The bounds are in logical pixels; the window scales them
+        if index == Tree::ROOT {
+            raw.set_transform(accesskit::Affine::scale(scale_factor));
+        }
+
+        // A widget that was given a name of its own tells its
+        // placeholder beside it
+        let is_named = node.label.is_some() && node.label != node.placeholder;
+
+        if is_named && let Some(placeholder) = &node.placeholder {
+            raw.set_placeholder(placeholder.as_str());
+        }
+
+        match (&node.label, &node.value, node.role) {
+            // The text of a piece of text is its value
+            (Some(text), _, Role::Text) => raw.set_value(text.as_str()),
+            // A list without a name is called by the option that is
+            // chosen, and by its placeholder while none is: screen
+            // readers do not read the value of a combo box
+            (_, Some(chosen), Role::ComboBox) if !is_named => {
+                raw.set_label(chosen.as_str());
+                raw.set_value(chosen.as_str());
+            }
+            (label, value, _) => {
+                if let Some(label) = label {
+                    raw.set_label(label.as_str());
+                }
+
+                if let Some(value) = value {
+                    raw.set_value(value.as_str());
+                }
+            }
+        }
+
+        if let Some(toggled) = node.toggled {
+            use crate::core::widget::operation::accessible::Toggled as T;
+
+            raw.set_toggled(match toggled {
+                T::No => Toggled::False,
+                T::Yes => Toggled::True,
+                T::Mixed => Toggled::Mixed,
             });
+        }
 
-            // The bounds are in logical pixels; the window scales them
-            if index == Tree::ROOT {
-                raw.set_transform(accesskit::Affine::scale(scale_factor));
+        if let Some((value, min, max)) = node.range {
+            raw.set_numeric_value(f64::from(value));
+            raw.set_min_numeric_value(f64::from(min));
+            raw.set_max_numeric_value(f64::from(max));
+        }
+
+        if let Some(step) = node.step {
+            raw.set_numeric_value_step(f64::from(step));
+        }
+
+        // A slider is moved by assistive technology too
+        if node.role == Role::Slider && node.is_enabled {
+            raw.add_action(Action::Increment);
+            raw.add_action(Action::Decrement);
+            raw.add_action(Action::SetValue);
+        }
+
+        if let Some(is_expanded) = node.expanded {
+            raw.set_expanded(is_expanded);
+        }
+
+        if let Some(is_selected) = node.selected {
+            raw.set_selected(is_selected);
+        }
+
+        // A status line is said when its words change
+        if let Some(live) = node.live {
+            use crate::core::widget::operation::accessible::Live;
+
+            raw.set_live(match live {
+                Live::Polite => accesskit::Live::Polite,
+                Live::Assertive => accesskit::Live::Assertive,
+            });
+        }
+
+        // What is inside a scroll area is cut at its edges, and it
+        // says how far it is scrolled
+        if let Some(scroll) = node.scroll {
+            raw.set_clips_children();
+
+            let room =
+                |content: f32, view: f32| f64::from((content - view).max(0.0));
+
+            raw.set_scroll_x(f64::from(scroll.offset.x));
+            raw.set_scroll_x_min(0.0);
+            raw.set_scroll_x_max(room(scroll.content.width, node.bounds.width));
+            raw.set_scroll_y(f64::from(scroll.offset.y));
+            raw.set_scroll_y_min(0.0);
+            raw.set_scroll_y_max(room(
+                scroll.content.height,
+                node.bounds.height,
+            ));
+
+            if scroll.content.height > node.bounds.height {
+                raw.add_action(Action::ScrollUp);
+                raw.add_action(Action::ScrollDown);
             }
 
-            // A widget that was given a name of its own tells its
-            // placeholder beside it
-            let is_named =
-                node.label.is_some() && node.label != node.placeholder;
-
-            if is_named && let Some(placeholder) = &node.placeholder {
-                raw.set_placeholder(placeholder.as_str());
+            if scroll.content.width > node.bounds.width {
+                raw.add_action(Action::ScrollLeft);
+                raw.add_action(Action::ScrollRight);
             }
 
-            match (&node.label, &node.value, node.role) {
-                // The text of a piece of text is its value
-                (Some(text), _, Role::Text) => raw.set_value(text.as_str()),
-                // A list without a name is called by the option that is
-                // chosen, and by its placeholder while none is: screen
-                // readers do not read the value of a combo box
-                (_, Some(chosen), Role::ComboBox) if !is_named => {
-                    raw.set_label(chosen.as_str());
-                    raw.set_value(chosen.as_str());
-                }
-                (label, value, _) => {
-                    if let Some(label) = label {
-                        raw.set_label(label.as_str());
-                    }
+            raw.add_action(Action::SetScrollOffset);
+        }
 
-                    if let Some(value) = value {
-                        raw.set_value(value.as_str());
-                    }
-                }
-            }
+        if is_scrolled[index] {
+            raw.add_action(Action::ScrollIntoView);
+        }
 
-            if let Some(toggled) = node.toggled {
-                use crate::core::widget::operation::accessible::Toggled as T;
+        if !node.is_enabled {
+            raw.set_disabled();
+        }
 
-                raw.set_toggled(match toggled {
-                    T::No => Toggled::False,
-                    T::Yes => Toggled::True,
-                    T::Mixed => Toggled::Mixed,
-                });
-            }
+        if node.is_focusable {
+            raw.add_action(Action::Focus);
+        }
 
-            if let Some((value, min, max)) = node.range {
-                raw.set_numeric_value(f64::from(value));
-                raw.set_min_numeric_value(f64::from(min));
-                raw.set_max_numeric_value(f64::from(max));
-            }
+        if node.is_enabled
+            && matches!(
+                node.role,
+                Role::Button
+                    | Role::CheckBox
+                    | Role::Switch
+                    | Role::RadioButton
+                    | Role::ComboBox
+                    | Role::MenuItem
+            )
+        {
+            raw.add_action(Action::Click);
+        }
 
-            // What is inside a scroll area is cut at its edges, and it
-            // says how far it is scrolled
-            if let Some(scroll) = node.scroll {
-                raw.set_clips_children();
+        let mut children: Vec<_> = node
+            .children
+            .iter()
+            .map(|child| node_id(tree, *child))
+            .collect();
 
-                let room = |content: f32, view: f32| {
-                    f64::from((content - view).max(0.0))
-                };
+        // The text of a field, line by line, with the caret and the
+        // selection in it
+        let mut runs = Vec::new();
 
-                raw.set_scroll_x(f64::from(scroll.offset.x));
-                raw.set_scroll_x_min(0.0);
-                raw.set_scroll_x_max(room(
-                    scroll.content.width,
-                    node.bounds.width,
-                ));
-                raw.set_scroll_y(f64::from(scroll.offset.y));
-                raw.set_scroll_y_min(0.0);
-                raw.set_scroll_y_max(room(
-                    scroll.content.height,
-                    node.bounds.height,
-                ));
-            }
+        for (line, (_, text)) in lines(node).enumerate() {
+            let id = run_id(node, line);
 
-            if is_scrolled[index] {
-                raw.add_action(Action::ScrollIntoView);
-            }
+            children.push(id);
+            runs.push((id, run(node, text)));
+        }
 
-            if !node.is_enabled {
-                raw.set_disabled();
-            }
+        if let Some(selection) = node.selection
+            && let Some(anchor) = position(node, selection.anchor)
+            && let Some(focus) = position(node, selection.focus)
+        {
+            raw.set_text_selection(accesskit::TextSelection { anchor, focus });
+        }
 
-            if node.is_focusable {
-                raw.add_action(Action::Focus);
-            }
+        raw.set_children(children);
 
-            if node.is_enabled
-                && matches!(
-                    node.role,
-                    Role::Button
-                        | Role::CheckBox
-                        | Role::Switch
-                        | Role::RadioButton
-                        | Role::ComboBox
-                )
-            {
-                raw.add_action(Action::Click);
-            }
+        nodes.push((node_id(tree, index), raw));
+        nodes.extend(runs);
+    }
 
-            raw.set_children(
-                node.children
-                    .iter()
-                    .map(|child| node_id(*child))
-                    .collect::<Vec<_>>(),
-            );
-
-            (node_id(index), raw)
-        })
-        .collect();
-
-    let mut info = TreeInfo::new(node_id(Tree::ROOT));
+    let mut info = TreeInfo::new(node_id(tree, Tree::ROOT));
     info.toolkit_name = Some("iced".to_owned());
     info.toolkit_version = Some(env!("CARGO_PKG_VERSION").to_owned());
 
@@ -387,7 +672,7 @@ pub fn tree_update(tree: &Tree, scale_factor: f64) -> TreeUpdate {
         nodes,
         tree: Some(info),
         tree_id: TreeId::ROOT,
-        focus: node_id(tree.focused().unwrap_or(Tree::ROOT)),
+        focus: node_id(tree, tree.focused().unwrap_or(Tree::ROOT)),
     }
 }
 
@@ -427,36 +712,34 @@ mod tests {
         let mut progress = node(Role::ProgressBar, None, &[]);
         progress.range = Some((30.0, 0.0, 100.0));
 
-        let tree = Tree {
-            nodes: vec![
-                node(Role::Window, Some("Form"), &[1, 2, 3, 4]),
-                node(Role::Text, Some("Hello"), &[]),
-                check,
-                disabled,
-                progress,
-            ],
-        };
+        let tree = Tree::from_nodes(vec![
+            node(Role::Window, Some("Form"), &[1, 2, 3, 4]),
+            node(Role::Text, Some("Hello"), &[]),
+            check,
+            disabled,
+            progress,
+        ]);
 
         let update = tree_update(&tree, 2.0);
 
-        assert_eq!(update.focus, NodeId(2), "the focus is on the check box");
-        assert_eq!(update.tree.as_ref().unwrap().root, NodeId(0));
+        let id = |index: usize| NodeId(tree.nodes[index].id);
+
+        assert_eq!(update.focus, id(2), "the focus is on the check box");
+        assert_eq!(update.tree.as_ref().unwrap().root, id(0));
+        assert_eq!(id(0), NodeId(Tree::ROOT_ID));
         assert_eq!(update.nodes.len(), 5);
 
-        let (_, window) = &update.nodes[0];
+        let window = raw(&update, &tree, 0);
         assert_eq!(window.role(), accesskit::Role::Window);
         assert_eq!(window.label(), Some("Form"));
-        assert_eq!(
-            window.children(),
-            [NodeId(1), NodeId(2), NodeId(3), NodeId(4)]
-        );
+        assert_eq!(window.children(), [id(1), id(2), id(3), id(4)]);
         assert_eq!(window.transform(), Some(&accesskit::Affine::scale(2.0)));
 
-        let (_, text) = &update.nodes[1];
+        let text = raw(&update, &tree, 1);
         assert_eq!(text.role(), accesskit::Role::Label);
         assert_eq!(text.value(), Some("Hello"));
 
-        let (_, check) = &update.nodes[2];
+        let check = raw(&update, &tree, 2);
         assert_eq!(check.role(), accesskit::Role::CheckBox);
         assert_eq!(check.label(), Some("I agree"));
         assert_eq!(check.toggled(), Some(Toggled::Mixed));
@@ -472,11 +755,11 @@ mod tests {
             })
         );
 
-        let (_, disabled) = &update.nodes[3];
+        let disabled = raw(&update, &tree, 3);
         assert!(disabled.is_disabled());
         assert!(!disabled.supports_action(Action::Click));
 
-        let (_, progress) = &update.nodes[4];
+        let progress = raw(&update, &tree, 4);
         assert_eq!(progress.role(), accesskit::Role::ProgressIndicator);
         assert_eq!(progress.numeric_value(), Some(30.0));
         assert_eq!(progress.max_numeric_value(), Some(100.0));
@@ -491,28 +774,26 @@ mod tests {
             content: Size::new(200.0, 500.0),
         });
 
-        let tree = Tree {
-            nodes: vec![
-                node(Role::Window, Some("List"), &[1, 3]),
-                area,
-                node(Role::Button, Some("Send a report"), &[]),
-                node(Role::Button, Some("Beside the list"), &[]),
-            ],
-        };
+        let tree = Tree::from_nodes(vec![
+            node(Role::Window, Some("List"), &[1, 3]),
+            area,
+            node(Role::Button, Some("Send a report"), &[]),
+            node(Role::Button, Some("Beside the list"), &[]),
+        ]);
 
         let update = tree_update(&tree, 1.0);
 
-        let (_, area) = &update.nodes[1];
+        let area = raw(&update, &tree, 1);
         assert_eq!(area.role(), accesskit::Role::ScrollView);
         assert!(area.clips_children());
         assert_eq!(area.scroll_y(), Some(40.0));
         assert_eq!(area.scroll_y_max(), Some(400.0));
         assert_eq!(area.scroll_x_max(), Some(0.0));
 
-        let (_, inside) = &update.nodes[2];
+        let inside = raw(&update, &tree, 2);
         assert!(inside.supports_action(Action::ScrollIntoView));
 
-        let (_, beside) = &update.nodes[3];
+        let beside = raw(&update, &tree, 3);
         assert!(!beside.supports_action(Action::ScrollIntoView));
     }
 
@@ -531,36 +812,242 @@ mod tests {
         plain_list.placeholder = Some("Choose".to_owned());
         plain_list.value = Some("Rust".to_owned());
 
-        let tree = Tree {
-            nodes: vec![
-                node(Role::Window, Some("Form"), &[1, 2, 3, 4, 5]),
-                named,
-                unnamed,
-                node(Role::SecureTextInput, Some("Password"), &[]),
-                list,
-                plain_list,
-            ],
-        };
+        let tree = Tree::from_nodes(vec![
+            node(Role::Window, Some("Form"), &[1, 2, 3, 4, 5]),
+            named,
+            unnamed,
+            node(Role::SecureTextInput, Some("Password"), &[]),
+            list,
+            plain_list,
+        ]);
 
         let update = tree_update(&tree, 1.0);
 
-        let (_, named) = &update.nodes[1];
+        let named = raw(&update, &tree, 1);
         assert_eq!(named.label(), Some("Email"));
         assert_eq!(named.placeholder(), Some("you@example.com"));
 
-        let (_, unnamed) = &update.nodes[2];
+        let unnamed = raw(&update, &tree, 2);
         assert_eq!(unnamed.label(), Some("you@example.com"));
         assert_eq!(unnamed.placeholder(), None);
 
-        let (_, secret) = &update.nodes[3];
+        let secret = raw(&update, &tree, 3);
         assert_eq!(secret.role(), accesskit::Role::PasswordInput);
         assert_eq!(secret.value(), None);
 
-        let (_, list) = &update.nodes[4];
+        let list = raw(&update, &tree, 4);
         assert_eq!(list.label(), Some("Language"));
         assert_eq!(list.value(), Some("Rust"));
 
-        let (_, plain_list) = &update.nodes[5];
+        let plain_list = raw(&update, &tree, 5);
         assert_eq!(plain_list.label(), Some("Rust"));
+    }
+
+    /// The node of the update that the node of the tree became.
+    fn raw<'a>(update: &'a TreeUpdate, tree: &Tree, index: usize) -> &'a Node {
+        let id = NodeId(tree.nodes[index].id);
+
+        update
+            .nodes
+            .iter()
+            .find_map(|(node, raw)| (*node == id).then_some(raw))
+            .expect("the node is in the update")
+    }
+
+    fn by_id(update: &TreeUpdate, id: NodeId) -> &Node {
+        update
+            .nodes
+            .iter()
+            .find_map(|(node, raw)| (*node == id).then_some(raw))
+            .expect("the node is in the update")
+    }
+
+    #[test]
+    fn a_node_keeps_its_identifier_when_the_tree_changes_around_it() {
+        use crate::core::widget::operation::accessible::Selection;
+
+        let before = Tree::from_nodes(vec![
+            node(Role::Window, Some("Form"), &[1, 2]),
+            node(Role::Text, Some("Name"), &[]),
+            node(Role::Button, Some("Save"), &[]),
+        ]);
+
+        // A notice above, and the button somewhere else
+        let mut moved = node(Role::Button, Some("Save"), &[]);
+        moved.bounds =
+            Rectangle::new(Point::new(300.0, 400.0), Size::new(5.0, 5.0));
+
+        let mut field = node(Role::TextInput, Some("Name"), &[]);
+        field.selection = Some(Selection::caret(0));
+
+        let after = Tree::from_nodes(vec![
+            node(Role::Window, Some("Form"), &[1, 2, 3, 4]),
+            node(Role::Text, Some("Saved."), &[]),
+            node(Role::Text, Some("Name"), &[]),
+            field,
+            moved,
+        ]);
+
+        assert_eq!(before.nodes[1].id, after.nodes[2].id);
+        assert_eq!(before.nodes[2].id, after.nodes[4].id);
+
+        let a = tree_update(&before, 1.0);
+        let b = tree_update(&after, 1.0);
+
+        assert_eq!(a.nodes[2].0, NodeId(before.nodes[2].id));
+        assert_eq!(raw(&b, &after, 4).label(), Some("Save"));
+        assert_eq!(a.tree.unwrap().root, b.tree.unwrap().root);
+
+        // No identifier is used twice, the lines of the field included
+        let mut ids: Vec<_> = b.nodes.iter().map(|(id, _)| id.0).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), b.nodes.len());
+        assert_eq!(b.nodes.len(), 6, "five nodes and the line of the field");
+    }
+
+    #[test]
+    fn the_text_of_a_field_is_told_line_by_line_with_its_caret() {
+        use crate::core::widget::operation::accessible::Selection;
+
+        let mut editor = node(Role::TextEditor, Some("Notes"), &[]);
+        // "Zoë" is four bytes: the caret after it is at 4; the selection
+        // begins in the second line, after "tw"
+        editor.value = Some("Zoë\ntwo words\n".to_owned());
+        editor.selection = Some(Selection {
+            anchor: 7,
+            focus: 4,
+        });
+
+        let mut empty = node(Role::TextInput, Some("Name"), &[]);
+        empty.value = Some(String::new());
+        empty.selection = Some(Selection::caret(0));
+
+        let mut secret = node(Role::SecureTextInput, Some("Password"), &[]);
+        secret.selection = Some(Selection::caret(2));
+
+        let tree = Tree::from_nodes(vec![
+            node(Role::Window, Some("Form"), &[1, 2, 3]),
+            editor,
+            empty,
+            secret,
+        ]);
+
+        let update = tree_update(&tree, 1.0);
+
+        let editor = raw(&update, &tree, 1);
+        assert_eq!(editor.role(), accesskit::Role::MultilineTextInput);
+        assert_eq!(editor.value(), Some("Zoë\ntwo words\n"));
+
+        let lines: Vec<_> = editor
+            .children()
+            .iter()
+            .map(|id| by_id(&update, *id))
+            .collect();
+
+        assert_eq!(lines.len(), 3, "two lines and the empty one after them");
+        assert!(lines.iter().all(|l| l.role() == accesskit::Role::TextRun));
+        assert_eq!(lines[0].value(), Some("Zoë\n"));
+        assert_eq!(lines[0].character_lengths(), [1, 1, 2, 1]);
+        assert_eq!(lines[1].value(), Some("two words\n"));
+        assert_eq!(lines[1].word_starts(), [4]);
+        assert_eq!(lines[1].character_lengths().len(), 10);
+        assert_eq!(lines[2].value(), Some(""));
+
+        let selection = editor.text_selection().expect("a selection");
+        assert_eq!(selection.anchor.node, editor.children()[1]);
+        assert_eq!(selection.anchor.character_index, 2);
+        assert_eq!(selection.focus.node, editor.children()[0]);
+        assert_eq!(
+            selection.focus.character_index, 3,
+            "characters as a person counts them, not bytes"
+        );
+
+        // A field with nothing in it has a line for the caret to be in
+        let empty = raw(&update, &tree, 2);
+        assert_eq!(empty.children().len(), 1);
+        let caret = empty.text_selection().expect("a caret");
+        assert_eq!(caret.anchor, caret.focus);
+        assert_eq!(caret.focus.node, empty.children()[0]);
+        assert_eq!(caret.focus.character_index, 0);
+
+        // Nothing of a secret
+        let secret = raw(&update, &tree, 3);
+        assert!(secret.children().is_empty());
+        assert!(secret.text_selection().is_none());
+    }
+
+    #[test]
+    fn open_lists_status_lines_and_sliders_say_what_they_are() {
+        use crate::core::widget::operation::accessible::Live;
+
+        let mut list = node(Role::ComboBox, Some("How often"), &[]);
+        list.expanded = Some(true);
+
+        let mut chosen = node(Role::MenuItem, Some("Daily"), &[]);
+        chosen.selected = Some(true);
+
+        let mut other = node(Role::MenuItem, Some("Hourly"), &[]);
+        other.selected = Some(false);
+
+        let mut status = node(Role::Text, Some("Up to date"), &[]);
+        status.live = Some(Live::Polite);
+
+        let mut slider = node(Role::Slider, Some("Volume"), &[]);
+        slider.range = Some((40.0, 0.0, 100.0));
+        slider.step = Some(5.0);
+        slider.is_focusable = true;
+
+        let mut combo = node(Role::EditableComboBox, Some("Language"), &[]);
+        combo.value = Some("Du".to_owned());
+        combo.expanded = Some(false);
+
+        let tree = Tree::from_nodes(vec![
+            node(Role::Window, Some("Form"), &[1, 2, 5, 6, 7]),
+            list,
+            node(Role::Menu, None, &[3, 4]),
+            chosen,
+            other,
+            status,
+            slider,
+            combo,
+        ]);
+
+        let update = tree_update(&tree, 1.0);
+
+        let list = raw(&update, &tree, 1);
+        assert_eq!(list.is_expanded(), Some(true));
+
+        let menu = raw(&update, &tree, 2);
+        assert_eq!(menu.role(), accesskit::Role::ListBox);
+        assert_eq!(menu.children().len(), 2);
+
+        let chosen = raw(&update, &tree, 3);
+        assert_eq!(chosen.role(), accesskit::Role::ListBoxOption);
+        assert_eq!(chosen.is_selected(), Some(true));
+        assert!(chosen.supports_action(Action::Click));
+        assert_eq!(raw(&update, &tree, 4).is_selected(), Some(false));
+
+        let status = raw(&update, &tree, 5);
+        assert_eq!(status.role(), accesskit::Role::Label);
+        assert_eq!(status.live(), Some(accesskit::Live::Polite));
+        assert_eq!(status.value(), Some("Up to date"));
+        assert!(
+            status.children().is_empty(),
+            "no lines: nothing is selected"
+        );
+
+        let slider = raw(&update, &tree, 6);
+        assert_eq!(slider.role(), accesskit::Role::Slider);
+        assert_eq!(slider.label(), Some("Volume"));
+        assert_eq!(slider.numeric_value(), Some(40.0));
+        assert_eq!(slider.numeric_value_step(), Some(5.0));
+        assert!(slider.supports_action(Action::Increment));
+        assert!(slider.supports_action(Action::SetValue));
+
+        let combo = raw(&update, &tree, 7);
+        assert_eq!(combo.role(), accesskit::Role::EditableComboBox);
+        assert_eq!(combo.is_expanded(), Some(false));
+        assert_eq!(combo.children().len(), 1, "what is typed, as a line");
     }
 }

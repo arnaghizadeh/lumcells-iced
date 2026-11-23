@@ -108,6 +108,7 @@ pub struct TextEditor<
     Renderer: text::Renderer,
 {
     id: Option<widget::Id>,
+    accessible_name: Option<String>,
     content: &'a Content<Renderer>,
     placeholder: Option<text::Fragment<'a>>,
     font: Option<Renderer::Font>,
@@ -140,6 +141,7 @@ where
     pub fn new(content: &'a Content<Renderer>) -> Self {
         Self {
             id: None,
+            accessible_name: None,
             content,
             placeholder: None,
             font: None,
@@ -176,6 +178,13 @@ where
     Theme: Catalog,
     Renderer: text::Renderer,
 {
+    /// Sets the name assistive technology (a screen reader) calls the
+    /// [`TextEditor`] by; without one it is called by its placeholder.
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
+    }
+
     /// Sets the placeholder of the [`TextEditor`].
     pub fn placeholder(
         mut self,
@@ -287,6 +296,7 @@ where
     ) -> TextEditor<'a, H, Message, Theme, Renderer> {
         TextEditor {
             id: self.id,
+            accessible_name: self.accessible_name,
             content: self.content,
             placeholder: self.placeholder,
             font: self.font,
@@ -1093,6 +1103,51 @@ where
         operation: &mut dyn widget::Operation,
     ) {
         let state = tree.state.downcast_mut::<State<Highlighter>>();
+
+        {
+            use crate::core::widget::operation::accessible::{
+                Accessible, Role, Selection,
+            };
+
+            // The text with one line feed after each line but the last,
+            // and where each line begins in it
+            let mut value = String::new();
+            let mut starts = Vec::new();
+
+            for line in self.content.lines() {
+                if !starts.is_empty() {
+                    value.push('\n');
+                }
+
+                starts.push(value.len());
+                value.push_str(&line.text);
+            }
+
+            let offset = |position: Position| {
+                starts.get(position.line).map_or(value.len(), |start| {
+                    (start + position.column).min(value.len())
+                })
+            };
+
+            let cursor = self.content.cursor();
+            let focus = offset(cursor.position);
+
+            let placeholder = self.placeholder.as_ref().map(AsRef::as_ref);
+
+            operation.accessible(
+                self.id.as_ref(),
+                layout.bounds(),
+                Accessible::new(Role::TextEditor)
+                    .label(self.accessible_name.as_deref())
+                    .placeholder(placeholder)
+                    .value(value.as_str())
+                    .selection(Selection {
+                        anchor: cursor.selection.map_or(focus, offset),
+                        focus,
+                    })
+                    .enabled(self.on_edit.is_some()),
+            );
+        }
 
         if self.on_edit.is_some() {
             operation.focusable(self.id.as_ref(), layout.bounds(), state);

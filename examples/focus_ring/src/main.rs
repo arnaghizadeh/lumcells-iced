@@ -401,18 +401,19 @@ mod tests {
             tree.describe(),
             r#"Window "Focus ring"
   Text "Press Tab to move, Space or Enter to press"
-  TextInput "Your name" value="Ada"
+  TextInput "Your name" value="Ada" caret=0
   CheckBox "I agree with the terms" toggled=Yes
   Switch "Tell me when it is done" toggled=No
   RadioButton "Monthly" toggled=Yes
   RadioButton "Yearly" toggled=No
-  ComboBox value="Medium"
+  ComboBox value="Medium" closed
   Text "Volume 40"
   Slider "Volume" 40 in 0..=100
   ScrollArea scrolled=0,0
     Text "These are the terms. They are longer than the box they are shown in, and nothing inside them takes the keyboard focus, so the box itself is a stop of the Tab key: with the focus on it the arrows, Page Up, Page Down, Space, Home and End scroll it. A person without a pointer can read them to their end before agreeing with them, which is the least that can be asked of terms."
-  TextInput "Language" value=""
-  TextInput "Not yours to change" value="" disabled
+  EditableComboBox "Language" value="" caret=0 closed
+  TextEditor "Notes" value="" caret=0
+  TextInput "Not yours to change" value="" caret=0 disabled
   Button "Save" focused
   Button "Cancel"
   Button "Not yet" disabled

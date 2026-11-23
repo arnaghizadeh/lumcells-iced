@@ -681,6 +681,8 @@ where
 
         operation.focusable(self.id.as_ref(), layout.bounds(), state);
 
+        let is_open = state.is_open;
+
         let selected = self
             .selected
             .as_ref()
@@ -692,7 +694,8 @@ where
             operation::Accessible::new(operation::accessible::Role::ComboBox)
                 .label(self.accessible_name.as_deref())
                 .placeholder(self.placeholder.as_deref())
-                .value(selected.as_deref()),
+                .value(selected.as_deref())
+                .expanded(is_open),
         );
     }
 

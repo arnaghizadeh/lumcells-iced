@@ -29,6 +29,7 @@ use crate::renderer;
 use crate::text;
 use crate::text::paragraph::{self, Paragraph};
 use crate::touch;
+use crate::widget::operation::accessible::{self, Accessible};
 use crate::widget::tree::{self, Tree};
 use crate::{
     Color, Element, Event, Layout, Length, Pixels, Point, Rectangle, Shell,
@@ -36,6 +37,8 @@ use crate::{
 };
 
 pub use text::{Alignment, LineHeight, Shaping, Wrapping};
+
+pub use crate::widget::operation::accessible::Live;
 
 /// A bunch of text.
 ///
@@ -69,6 +72,7 @@ where
     class: Theme::Class<'a>,
     selectable: bool,
     selection_color: Option<Color>,
+    live: Option<Live>,
 }
 
 impl<'a, Theme, Renderer> Text<'a, Theme, Renderer>
@@ -84,7 +88,20 @@ where
             class: Theme::default(),
             selectable: false,
             selection_color: None,
+            live: None,
         }
+    }
+
+    /// Makes the [`Text`] a status line for assistive technology: a screen
+    /// reader says its words when they change, without being asked
+    /// ("Up to date", "Waiting for approval"). [`Live::Polite`] waits for
+    /// the reader to finish what it is saying, [`Live::Assertive`] does
+    /// not.
+    ///
+    /// By default a [`Text`] is said only when a person reads it.
+    pub fn live(mut self, live: impl Into<Option<Live>>) -> Self {
+        self.live = live.into();
+        self
     }
 
     /// Sets whether the [`Text`] can be selected with the pointer and copied
@@ -492,11 +509,35 @@ where
 
     fn operate(
         &mut self,
-        _tree: &mut Tree,
+        tree: &mut Tree,
         layout: Layout<'_>,
         _renderer: &Renderer,
         operation: &mut dyn super::Operation,
     ) {
+        // What is selected in it, if anything is
+        let selection = tree
+            .children
+            .first()
+            .filter(|_| self.selectable)
+            .map(|selection| selection.state.downcast_ref::<Selection>())
+            .filter(|selection| selection.anchor != selection.head)
+            .map(|selection| accessible::Selection {
+                anchor: selection.anchor.min(self.fragment.len()),
+                focus: selection.head.min(self.fragment.len()),
+            });
+
+        // A text that has more to tell than its words describes itself
+        if self.live.is_some() || selection.is_some() {
+            operation.accessible(
+                None,
+                layout.bounds(),
+                Accessible::new(accessible::Role::Text)
+                    .label(&*self.fragment)
+                    .selection(selection)
+                    .live(self.live),
+            );
+        }
+
         operation.text(None, layout.bounds(), &self.fragment);
     }
 }

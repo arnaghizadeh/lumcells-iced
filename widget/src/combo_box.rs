@@ -834,7 +834,18 @@ where
         operation: &mut dyn widget::Operation,
     ) {
         // The field of the combo box is what takes the focus; the list is
-        // open for as long as it has it
+        // open for as long as it has it and there is an option to show
+        let is_focused = tree.children[0]
+            .state
+            .downcast_ref::<text_input::State<Renderer::Paragraph>>()
+            .is_focused();
+
+        let menu = tree.state.downcast_mut::<Menu<T>>();
+        self.state.sync_filtered_options(&mut menu.filtered_options);
+
+        self.text_input
+            .set_combo(is_focused && !menu.filtered_options.options.is_empty());
+
         Widget::<TextInputEvent, Theme, Renderer>::operate(
             &mut self.text_input,
             &mut tree.children[0],

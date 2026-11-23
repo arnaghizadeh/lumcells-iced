@@ -108,6 +108,8 @@ pub struct TextInput<
     placeholder: String,
     value: Value,
     is_secure: bool,
+    /// For the field of a combo box: whether its list is open.
+    combo: Option<bool>,
     font: Option<Renderer::Font>,
     width: Length,
     padding: Padding,
@@ -140,6 +142,7 @@ where
             placeholder: String::from(placeholder),
             value: Value::new(value),
             is_secure: false,
+            combo: None,
             font: None,
             width: Length::Fill,
             padding: DEFAULT_PADDING,
@@ -170,6 +173,12 @@ where
     pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
         self
+    }
+
+    /// Makes the [`TextInput`] tell assistive technology that it is the
+    /// field of a combo box, whose list is open or not.
+    pub(crate) fn set_combo(&mut self, is_expanded: bool) {
+        self.combo = Some(is_expanded);
     }
 
     /// Converts the [`TextInput`] into a secure password input.
@@ -708,15 +717,38 @@ where
             // What is typed in a secure field is not told
             let value = (!self.is_secure).then(|| self.value.to_string());
 
+            // The caret and the selection, in bytes of the value
+            let selection = (!self.is_secure).then(|| {
+                let bytes = |graphemes: usize| {
+                    self.value.until(graphemes).to_string().len()
+                };
+
+                match state.cursor.state(&self.value) {
+                    cursor::State::Index(index) => {
+                        operation::accessible::Selection::caret(bytes(index))
+                    }
+                    cursor::State::Selection { start, end } => {
+                        operation::accessible::Selection {
+                            anchor: bytes(start),
+                            focus: bytes(end),
+                        }
+                    }
+                }
+            });
+
             operation.accessible(
                 self.id.as_ref(),
                 layout.bounds(),
                 // A secure field says that it is one
                 Accessible::new(if self.is_secure {
                     Role::SecureTextInput
+                } else if self.combo.is_some() {
+                    Role::EditableComboBox
                 } else {
                     Role::TextInput
                 })
+                .selection(selection)
+                .expanded_maybe(self.combo)
                 .label(self.accessible_name.as_deref())
                 .placeholder(
                     (!self.placeholder.is_empty())

@@ -204,7 +204,7 @@ mod tests {
             r#"Window "Accessible names"
   ScrollArea scrolled=0,0
     Text "Email"
-    TextInput "Email" value=""
+    TextInput "Email" value="" caret=0
     SecureTextInput "Password"
     Text "Start at login"
     Switch "Start at login" toggled=No
@@ -355,12 +355,19 @@ mod tests {
         let mut ui = window(&folders);
         let tree = ui.accessibility("Accessible names");
 
-        // A tree of another window: its nodes are other widgets here
+        // A tree of another interface: the widget that is asked for is
+        // not in this one (a widget is known by its identifier, which
+        // stays with it wherever it moves)
         let mut stale = tree.clone();
         let report = named(&stale, Role::Button, "Send a report");
-        stale.nodes[report].layout.y += 1.0;
+        stale.nodes[report].id += 1;
 
         assert!(!ui.accessibility_press(&stale, report));
+
+        // The same identifier on something that is no button any more
+        let mut other = tree.clone();
+        other.nodes[report].role = Role::CheckBox;
+        assert!(!ui.accessibility_press(&other, report));
         assert!(!ui.accessibility_press(&tree, tree.nodes.len()));
         assert_eq!(ui.into_messages().count(), 0);
     }
