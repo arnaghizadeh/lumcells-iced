@@ -57,3 +57,15 @@ under "Lumcells". Keep the public API of 0.14.0 working: the app must build befo
 Write `.build/REPORT_F1.md` here (what each patch does with its test or example, the CI run URL, what was not
 verified, what the Drive app dropped, what is left of the seven, and how to pull from upstream later: the
 rebase/merge recipe). Commit, push origin. Leave the workstation's desktop as you found it.
+
+## Added 22 Nov 2026 23:40 CT, after lane S2's report
+- **GitHub Actions does not run** for this account right now (billing; the owner settles it). Write
+  `ci.yml` anyway (F1.1) and push it, but do not wait for a run: verify every milestone on this
+  workstation (`cargo test`, clippy, the examples under Xvfb, the Drive app's tests and
+  `scripts/s2-proof.sh`). The report says which runs never happened.
+- The notes now have ten entries. After the seven, if small: item 8 (folder dialog: the answer is
+  `rfd`, no patch, only say so), item 9 (a subscription that owns a channel: a `Subscription::run_with`
+  that hands the channel's receiver to the stream), item 10 (the test library keeps its pixels: a
+  way to drop them).
+- Use at most 6 build jobs and 4 test threads (set by the lane runner). The box has restarted under
+  heavy load before; commit often.
