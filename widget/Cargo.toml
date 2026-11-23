@@ -27,6 +27,7 @@ wgpu = ["iced_renderer/wgpu-bare"]
 markdown = ["dep:pulldown-cmark"]
 highlighter = ["dep:iced_highlighter"]
 advanced = []
+terminal = ["dep:vte", "dep:unicode-width"]
 crisp = []
 
 [dependencies]
@@ -49,3 +50,9 @@ pulldown-cmark.optional = true
 
 iced_highlighter.workspace = true
 iced_highlighter.optional = true
+
+vte.workspace = true
+vte.optional = true
+
+unicode-width.workspace = true
+unicode-width.optional = true

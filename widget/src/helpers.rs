@@ -1499,6 +1499,20 @@ where
     TextEditor::new(content)
 }
 
+/// Creates a new [`Terminal`] that shows the given
+/// [`Content`](crate::terminal::Content).
+///
+/// [`Terminal`]: crate::Terminal
+#[cfg(feature = "terminal")]
+pub fn terminal<'a, Message, Theme>(
+    content: &'a crate::terminal::Content,
+) -> crate::Terminal<'a, Message, Theme>
+where
+    Theme: crate::terminal::Catalog,
+{
+    crate::Terminal::new(content)
+}
+
 /// Creates a new [`Slider`].
 ///
 /// Sliders let users set a value by moving an indicator.

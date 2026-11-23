@@ -4,8 +4,9 @@ The Lumcells fork of [iced](https://github.com/iced-rs/iced) (MIT), branch `lumc
 toolkit Lumcells applications ship. It is upstream's `0.14` branch plus the patches listed under
 **Lumcells** in [CHANGELOG.md](CHANGELOG.md): keyboard focus on every control, a three-state check
 box, selectable text, a tray icon without GTK, single instance, the macOS activation policy, the
-start of an accessibility tree, and a few things for tests. Each patch has an example
-(`examples/focus_ring`, `tri_state_checkbox`, `selectable_text`, `tray`, `single_instance`) and
+start of an accessibility tree, a terminal widget (feature `terminal`), and a few things for
+tests. Each patch has an example (`examples/focus_ring`, `tri_state_checkbox`,
+`selectable_text`, `tray`, `single_instance`, `terminal`) and
 tests; `.github/workflows/ci.yml` runs them on Linux, Windows and macOS.
 
 Use it from an application by pointing the `iced` crates at a commit of this branch:

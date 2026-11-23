@@ -138,6 +138,13 @@ pub mod canvas;
 #[doc(no_inline)]
 pub use canvas::Canvas;
 
+#[cfg(feature = "terminal")]
+pub mod terminal;
+
+#[cfg(feature = "terminal")]
+#[doc(no_inline)]
+pub use terminal::Terminal;
+
 #[cfg(feature = "qr_code")]
 pub mod qr_code;
 

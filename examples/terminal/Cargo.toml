@@ -1,0 +1,17 @@
+[package]
+name = "terminal"
+version = "0.1.0"
+authors = ["Lumcells Engineering <engineering@lumcells.com>"]
+edition = "2024"
+publish = false
+
+[dependencies]
+iced.workspace = true
+iced.features = ["terminal", "advanced"]
+
+# The pseudo-terminal the example's shell runs in (ConPTY on Windows). The
+# widget itself knows nothing of it: it is fed bytes and hands out bytes.
+portable-pty = "0.9"
+
+[dev-dependencies]
+iced_test.workspace = true
