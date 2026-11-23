@@ -21,11 +21,26 @@ pub fn main() -> iced::Result {
         .run()
 }
 
-#[derive(Default)]
 struct Counter {
     seconds: u64,
+    /// How much a tick counts: chosen in the submenu "Count by".
+    step: u64,
     paused: bool,
     window: Option<window::Id>,
+    /// Whether this desktop shows tray icons, once that is known.
+    has_tray: Option<bool>,
+}
+
+impl Default for Counter {
+    fn default() -> Self {
+        Self {
+            seconds: 0,
+            step: 1,
+            paused: false,
+            window: None,
+            has_tray: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +78,23 @@ impl Counter {
                 tray::Item::separator(),
                 tray::Item::button("open", "Open"),
                 tray::Item::check("pause", "Pause", self.paused),
+                // A menu inside the menu, with a picture before each item
+                // (and before itself)
+                tray::Item::submenu(
+                    "Count by",
+                    STEPS.map(|step| {
+                        tray::Item::button(
+                            format!("step-{step}"),
+                            if step == 1 {
+                                "1 second".to_owned()
+                            } else {
+                                format!("{step} seconds")
+                            },
+                        )
+                        .icon(dot(step == self.step))
+                    }),
+                )
+                .icon(dot(true)),
                 tray::Item::separator(),
                 tray::Item::button("quit", "Quit"),
             ])
@@ -70,11 +102,16 @@ impl Counter {
 
     fn open(&mut self) -> Task<Message> {
         if let Some(id) = self.window {
-            return window::gain_focus(id);
+            // To the front wherever it is: behind other windows,
+            // minimized, on Wayland too (with the token of a second
+            // start, where there is one)
+            return window::present(id);
         }
 
         let (id, open) = window::open(window::Settings {
-            size: iced::Size::new(320.0, 200.0),
+            size: iced::Size::new(360.0, 240.0),
+            // The window comes back where it was closed, as large as it was
+            remember: Some(window::Remember::new("main")),
             ..window::Settings::default()
         });
 
@@ -92,7 +129,7 @@ impl Counter {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => {
-                self.seconds += 1;
+                self.seconds += self.step;
 
                 tray::update(self.tray())
             }
@@ -101,9 +138,32 @@ impl Counter {
                 "open" => self.open(),
                 "pause" => self.toggle_pause(),
                 "quit" => iced::exit(),
-                _ => Task::none(),
+                id => match id
+                    .strip_prefix("step-")
+                    .and_then(|step| step.parse().ok())
+                {
+                    Some(step) => {
+                        self.step = step;
+
+                        tray::update(self.tray())
+                    }
+                    None => Task::none(),
+                },
             },
             Message::Tray(tray::Event::Click) => self.open(),
+            // No tray on this desktop (GNOME without the extension, a
+            // bare window manager): nobody can reach the icon, so the
+            // window is opened and says so
+            Message::Tray(tray::Event::Unavailable) => {
+                self.has_tray = Some(false);
+
+                self.open()
+            }
+            Message::Tray(tray::Event::Available) => {
+                self.has_tray = Some(true);
+
+                Task::none()
+            }
             // Here a program finishes what it is doing; then it ends
             Message::QuitRequested => iced::exit(),
             Message::Opened => Task::none(),
@@ -112,7 +172,13 @@ impl Counter {
                     self.window = None;
                 }
 
-                Task::none()
+                // Without a tray a program with no window could never be
+                // reached again: it ends with its window
+                if self.window.is_none() && self.has_tray == Some(false) {
+                    iced::exit()
+                } else {
+                    Task::none()
+                }
             }
         }
     }
@@ -123,8 +189,14 @@ impl Counter {
                 text!("{} seconds", self.seconds).size(28),
                 button(if self.paused { "Resume" } else { "Pause" })
                     .on_press(Message::TogglePause),
-                text("Closing this window leaves the icon in the tray.")
-                    .size(12),
+                text(match self.has_tray {
+                    Some(false) => {
+                        "This desktop shows no tray icons: closing this \
+                        window ends the program."
+                    }
+                    _ => "Closing this window leaves the icon in the tray.",
+                })
+                .size(12),
             ]
             .spacing(16)
             .align_x(Center),
@@ -185,6 +257,35 @@ fn icon(paused: bool) -> tray::Icon {
     tray::Icon::from_rgba(rgba, SIZE, SIZE).expect("32x32 pixels of RGBA")
 }
 
+/// What a tick can count.
+const STEPS: [u64; 3] = [1, 5, 60];
+
+/// The picture of an item of the menu: a dot of 16 pixels, blue for what
+/// is chosen and grey for the rest.
+fn dot(chosen: bool) -> tray::Icon {
+    const SIZE: u32 = 16;
+
+    let [red, green, blue] = if chosen {
+        [0x2f, 0x6f, 0xed]
+    } else {
+        [0xb0, 0xb4, 0xba]
+    };
+
+    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 + 0.5 - SIZE as f32 / 2.0;
+            let dy = y as f32 + 0.5 - SIZE as f32 / 2.0;
+            let alpha = (5.0 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0);
+
+            rgba.extend([red, green, blue, (alpha * 255.0) as u8]);
+        }
+    }
+
+    tray::Icon::from_rgba(rgba, SIZE, SIZE).expect("16x16 pixels of RGBA")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,7 +296,8 @@ mod tests {
             .items
             .iter()
             .map(|item| match item {
-                tray::Item::Button { label, .. } => label.as_str(),
+                tray::Item::Button { label, .. }
+                | tray::Item::Submenu { label, .. } => label.as_str(),
                 tray::Item::Separator => "-",
             })
             .collect()
@@ -212,8 +314,60 @@ mod tests {
         assert_eq!(settings.title(), "Tray example");
         assert_eq!(
             labels(&settings),
-            ["2 seconds", "-", "Open", "Pause", "-", "Quit"]
+            ["2 seconds", "-", "Open", "Pause", "Count by", "-", "Quit"]
         );
+    }
+
+    #[test]
+    fn the_submenu_chooses_what_a_tick_counts_and_marks_it_with_a_picture() {
+        let mut counter = Counter::default();
+
+        let inside = |counter: &Counter| match &counter.tray().menu.items[4] {
+            tray::Item::Submenu {
+                menu,
+                icon: Some(_),
+                ..
+            } => menu.clone(),
+            other => panic!("not a submenu with a picture: {other:?}"),
+        };
+
+        let chosen = |counter: &Counter| -> Vec<bool> {
+            inside(counter)
+                .items
+                .iter()
+                .map(|item| match item {
+                    tray::Item::Button {
+                        icon: Some(icon), ..
+                    } => *icon == dot(true),
+                    other => panic!("no picture: {other:?}"),
+                })
+                .collect()
+        };
+
+        assert_eq!(chosen(&counter), [true, false, false]);
+
+        let _ = counter
+            .update(Message::Tray(tray::Event::MenuItem("step-5".into())));
+        assert_eq!(chosen(&counter), [false, true, false]);
+
+        let _ = counter.update(Message::Tick);
+        assert_eq!(counter.seconds, 5);
+    }
+
+    #[test]
+    fn without_a_tray_the_window_opens_and_the_program_ends_with_it() {
+        let mut counter = Counter::default();
+
+        // The desktop shows no tray icons: the window is opened, since
+        // nothing else of the program can be reached
+        let _ = counter.update(Message::Tray(tray::Event::Unavailable));
+        let window = counter.window.expect("a window");
+        assert_eq!(counter.has_tray, Some(false));
+
+        // A panel is started: the icon is there, the window may go
+        let _ = counter.update(Message::Tray(tray::Event::Available));
+        assert_eq!(counter.has_tray, Some(true));
+        assert_eq!(counter.window, Some(window));
     }
 
     #[test]

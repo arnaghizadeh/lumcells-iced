@@ -49,6 +49,10 @@ impl Tray {
             stream::once(async move {
                 if let Err(error) = serve(settings, receiver, None).await {
                     log::error!("the tray icon stopped: {error}");
+
+                    // No session bus, or it went away: nothing shows the
+                    // icon
+                    super::emit(Event::Unavailable);
                 }
             })
             .filter_map(|()| future::ready(None))
@@ -88,6 +92,8 @@ fn lock(state: &State) -> MutexGuard<'_, Shared> {
 enum Wake {
     Update(Settings),
     WatcherAppeared,
+    WatcherVanished,
+    HostsChanged,
     Closed,
 }
 
@@ -155,24 +161,47 @@ async fn serve(
             .receive_name_owner_changed_with_args(&[(0, WATCHER)])
             .await?
             .filter_map(|signal| {
-                future::ready(
-                    signal
-                        .args()
-                        .ok()
-                        .and_then(|args| {
-                            args.new_owner().is_some().then_some(())
-                        })
-                        .map(|()| Wake::WatcherAppeared),
-                )
+                future::ready(signal.args().ok().map(|args| {
+                    if args.new_owner().is_some() {
+                        Wake::WatcherAppeared
+                    } else {
+                        Wake::WatcherVanished
+                    }
+                }))
             });
 
-        register(&connection, &name).await;
+        // A watcher can be there before anything draws the icons (at a
+        // login the panel may come after the program): it says when a
+        // host arrives or leaves
+        let hosts = zbus::MessageStream::for_match_rule(
+            zbus::MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .interface(WATCHER)?
+                .path(WATCHER_PATH)?
+                .build(),
+            &connection,
+            None,
+        )
+        .await?
+        .filter_map(|message| {
+            future::ready(message.ok().and_then(|message| {
+                let header = message.header();
+                let member = header.member()?.as_str();
+
+                member
+                    .starts_with("StatusNotifierHost")
+                    .then_some(Wake::HostsChanged)
+            }))
+        });
+
+        let registered = register(&connection, &name).await;
+        tell(registered && is_hosted(&connection).await);
 
         let mut wakes = stream::select(
             updates
                 .map(Wake::Update)
                 .chain(stream::once(future::ready(Wake::Closed))),
-            appearances,
+            stream::select(appearances, hosts),
         );
 
         while let Some(wake) = wakes.next().await {
@@ -181,7 +210,12 @@ async fn serve(
                     apply(&connection, &state, settings).await?;
                 }
                 Wake::WatcherAppeared => {
-                    register(&connection, &name).await;
+                    let registered = register(&connection, &name).await;
+                    tell(registered && is_hosted(&connection).await);
+                }
+                Wake::WatcherVanished => tell(false),
+                Wake::HostsChanged => {
+                    tell(is_hosted(&connection).await);
                 }
                 Wake::Closed => break,
             }
@@ -209,9 +243,49 @@ async fn futures_select<T>(
     }
 }
 
-/// Tells the watcher of the desktop about the item. With no watcher (no
-/// tray on this desktop, yet) there is nothing to tell.
-async fn register(connection: &zbus::Connection, name: &str) {
+/// Tells the program whether this desktop shows the icon.
+fn tell(is_available: bool) {
+    super::emit(if is_available {
+        Event::Available
+    } else {
+        Event::Unavailable
+    });
+}
+
+/// Whether something draws the icons the watcher knows: its
+/// `IsStatusNotifierHostRegistered`. A watcher that is there and does not
+/// answer this is believed to have one.
+async fn is_hosted(connection: &zbus::Connection) -> bool {
+    let reply = connection
+        .call_method(
+            Some(WATCHER),
+            WATCHER_PATH,
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &(WATCHER, "IsStatusNotifierHostRegistered"),
+        )
+        .await;
+
+    match reply {
+        Ok(reply) => reply
+            .body()
+            .deserialize::<zbus::zvariant::OwnedValue>()
+            .ok()
+            .and_then(|value| bool::try_from(value).ok())
+            .unwrap_or(true),
+        Err(zbus::Error::MethodError(name, _, _)) => !matches!(
+            name.as_str(),
+            "org.freedesktop.DBus.Error.ServiceUnknown"
+                | "org.freedesktop.DBus.Error.NameHasNoOwner"
+        ),
+        Err(_) => false,
+    }
+}
+
+/// Tells the watcher of the desktop about the item, and returns whether
+/// it took it. With no watcher (no tray on this desktop, yet) there is
+/// nothing to tell.
+async fn register(connection: &zbus::Connection, name: &str) -> bool {
     let result = connection
         .call_method(
             Some(WATCHER),
@@ -222,12 +296,14 @@ async fn register(connection: &zbus::Connection, name: &str) {
         )
         .await;
 
-    if let Err(error) = result {
+    if let Err(error) = &result {
         log::info!(
             "no tray on this desktop for now ({WATCHER} did not take the \
             icon: {error})"
         );
     }
+
+    result.is_ok()
 }
 
 /// Changes what is shown into the new [`Settings`] and tells the desktop
@@ -320,10 +396,16 @@ impl MenuChange {
             return MenuChange::None;
         }
 
-        let same_shape = old.items.len() == new.items.len()
-            && old.items.iter().zip(&new.items).all(|(old, new)| {
-                matches!(old, MenuItem::Separator)
-                    == matches!(new, MenuItem::Separator)
+        let (_, old) = entries(old);
+        let (_, new) = entries(new);
+
+        // The same kinds of items with as many items below each: the
+        // same tree, since both are numbered from the top, depth first
+        let same_shape = old.len() == new.len()
+            && old.iter().zip(&new).all(|(old, new)| {
+                std::mem::discriminant(old.item)
+                    == std::mem::discriminant(new.item)
+                    && old.children.len() == new.children.len()
             });
 
         if !same_shape {
@@ -333,13 +415,13 @@ impl MenuChange {
         let mut updated = Vec::new();
         let mut removed = Vec::new();
 
-        for ((old, new), id) in old.items.iter().zip(&new.items).zip(1..) {
-            if old == new {
+        for ((old, new), id) in old.iter().zip(&new).zip(1..) {
+            if old.item == new.item {
                 continue;
             }
 
-            let before = item_properties(old);
-            let mut after = item_properties(new);
+            let before = item_properties(old.item);
+            let mut after = item_properties(new.item);
 
             let gone: Vec<String> = before
                 .keys()
@@ -359,6 +441,65 @@ impl MenuChange {
         }
 
         MenuChange::Properties { updated, removed }
+    }
+}
+
+/// An item of the menu with the identifiers of the items of its submenu.
+struct Entry<'a> {
+    item: &'a MenuItem,
+    children: Vec<i32>,
+}
+
+/// The items of a menu and of every menu inside it, numbered from 1 as
+/// they are met from the top, an item before the ones of its submenu: the
+/// item with the identifier `i` is at `i - 1`. Also returns the
+/// identifiers of the items of the menu itself.
+fn entries(menu: &Menu) -> (Vec<i32>, Vec<Entry<'_>>) {
+    fn walk<'a>(menu: &'a Menu, entries: &mut Vec<Entry<'a>>) -> Vec<i32> {
+        menu.items
+            .iter()
+            .map(|item| {
+                let index = entries.len();
+
+                entries.push(Entry {
+                    item,
+                    children: Vec::new(),
+                });
+
+                if let MenuItem::Submenu { menu, .. } = item {
+                    entries[index].children = walk(menu, entries);
+                }
+
+                index as i32 + 1
+            })
+            .collect()
+    }
+
+    let mut entries = Vec::new();
+    let root = walk(menu, &mut entries);
+
+    (root, entries)
+}
+
+/// A picture as the bytes of a PNG file: the `icon-data` of an item.
+fn png(icon: &Icon) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    let mut encoder =
+        png::Encoder::new(&mut bytes, icon.width(), icon.height());
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+
+    let written = encoder
+        .write_header()
+        .and_then(|mut writer| writer.write_image_data(icon.rgba()));
+
+    match written {
+        Ok(()) => bytes,
+        Err(error) => {
+            log::error!("the picture of a menu item is not a PNG: {error}");
+            Vec::new()
+        }
     }
 }
 
@@ -525,10 +666,30 @@ fn item_properties(item: &MenuItem) -> Properties {
         MenuItem::Separator => {
             HashMap::from([("type".to_owned(), Value::from("separator"))])
         }
+        MenuItem::Submenu {
+            label,
+            enabled,
+            icon,
+            ..
+        } => {
+            let mut properties = HashMap::from([
+                ("label".to_owned(), Value::from(label.replace('_', "__"))),
+                ("enabled".to_owned(), Value::from(*enabled)),
+                ("children-display".to_owned(), Value::from("submenu")),
+            ]);
+
+            if let Some(icon) = icon {
+                let _ = properties
+                    .insert("icon-data".to_owned(), Value::from(png(icon)));
+            }
+
+            properties
+        }
         MenuItem::Button {
             label,
             enabled,
             checked,
+            icon,
             ..
         } => {
             let mut properties = HashMap::from([
@@ -536,6 +697,11 @@ fn item_properties(item: &MenuItem) -> Properties {
                 ("label".to_owned(), Value::from(label.replace('_', "__"))),
                 ("enabled".to_owned(), Value::from(*enabled)),
             ]);
+
+            if let Some(icon) = icon {
+                let _ = properties
+                    .insert("icon-data".to_owned(), Value::from(png(icon)));
+            }
 
             if let Some(checked) = checked {
                 let _ = properties
@@ -551,8 +717,42 @@ fn item_properties(item: &MenuItem) -> Properties {
     }
 }
 
-fn item(menu: &Menu, id: i32) -> Option<&MenuItem> {
-    menu.items.get(usize::try_from(id).ok()?.checked_sub(1)?)
+fn entry<'a, 'b>(entries: &'b [Entry<'a>], id: i32) -> Option<&'b Entry<'a>> {
+    entries.get(usize::try_from(id).ok()?.checked_sub(1)?)
+}
+
+/// The item with the given identifier and, as far as `depth` allows (a
+/// negative one allows all), the items below it.
+fn layout_of(
+    entries: &[Entry<'_>],
+    id: i32,
+    depth: i32,
+    names: &[String],
+) -> Option<Layout> {
+    let entry = entry(entries, id)?;
+
+    Some((
+        id,
+        filter(item_properties(entry.item), names),
+        children_of(entries, &entry.children, depth, names),
+    ))
+}
+
+fn children_of(
+    entries: &[Entry<'_>],
+    children: &[i32],
+    depth: i32,
+    names: &[String],
+) -> Vec<Value<'static>> {
+    if depth == 0 {
+        return Vec::new();
+    }
+
+    children
+        .iter()
+        .filter_map(|child| layout_of(entries, *child, depth - 1, names))
+        .map(|layout| Value::from(Structure::from(layout)))
+        .collect()
 }
 
 /// Keeps the properties that were asked for; an empty list asks for all.
@@ -575,10 +775,11 @@ impl DbusMenu {
         }
 
         let shared = lock(&self.state);
+        let (_, entries) = entries(&shared.settings.menu);
 
         if let Some(MenuItem::Button {
             id, enabled: true, ..
-        }) = item(&shared.settings.menu, id)
+        }) = entry(&entries, id).map(|entry| entry.item)
         {
             super::emit(Event::MenuItem(id.clone()));
         }
@@ -596,30 +797,18 @@ impl DbusMenu {
         let shared = lock(&self.state);
         let menu = &shared.settings.menu;
 
-        let layout = if parent_id == ROOT {
-            let children = if recursion_depth == 0 {
-                Vec::new()
-            } else {
-                menu.items
-                    .iter()
-                    .zip(1..)
-                    .map(|(item, id): (_, i32)| {
-                        Value::from(Structure::from((
-                            id,
-                            filter(item_properties(item), &property_names),
-                            Vec::<Value<'static>>::new(),
-                        )))
-                    })
-                    .collect()
-            };
+        let (root, entries) = entries(menu);
 
-            (ROOT, filter(root_properties(), &property_names), children)
-        } else if let Some(item) = item(menu, parent_id) {
+        let layout = if parent_id == ROOT {
             (
-                parent_id,
-                filter(item_properties(item), &property_names),
-                Vec::new(),
+                ROOT,
+                filter(root_properties(), &property_names),
+                children_of(&entries, &root, recursion_depth, &property_names),
             )
+        } else if let Some(layout) =
+            layout_of(&entries, parent_id, recursion_depth, &property_names)
+        {
+            layout
         } else {
             return Err(zbus::fdo::Error::InvalidArgs(format!(
                 "the menu has no item {parent_id}"
@@ -637,9 +826,11 @@ impl DbusMenu {
         let shared = lock(&self.state);
         let menu = &shared.settings.menu;
 
+        let (_, entries) = entries(menu);
+
         let all: Vec<i32>;
         let ids = if ids.is_empty() {
-            all = (ROOT..=menu.items.len() as i32).collect();
+            all = (ROOT..=entries.len() as i32).collect();
             &all
         } else {
             &ids
@@ -650,7 +841,7 @@ impl DbusMenu {
                 let properties = if *id == ROOT {
                     root_properties()
                 } else {
-                    item_properties(item(menu, *id)?)
+                    item_properties(entry(&entries, *id)?.item)
                 };
 
                 Some((*id, filter(properties, &property_names)))
@@ -668,8 +859,10 @@ impl DbusMenu {
         let mut properties = if id == ROOT {
             root_properties()
         } else {
-            item(&shared.settings.menu, id)
-                .map(item_properties)
+            let (_, entries) = entries(&shared.settings.menu);
+
+            entry(&entries, id)
+                .map(|entry| item_properties(entry.item))
                 .unwrap_or_default()
         };
 
@@ -698,8 +891,12 @@ impl DbusMenu {
         let mut unknown = Vec::new();
 
         for (id, event_id, _data, _timestamp) in events {
-            let known = id == ROOT
-                || item(&lock(&self.state).settings.menu, id).is_some();
+            let known = id == ROOT || {
+                let shared = lock(&self.state);
+                let (_, entries) = entries(&shared.settings.menu);
+
+                entry(&entries, id).is_some()
+            };
 
             if known {
                 self.activate(id, &event_id);
@@ -812,9 +1009,11 @@ mod tests {
         }
     }
 
-    /// The watcher of a desktop: it remembers who registered.
+    /// The watcher of a desktop: it remembers who registered, and says
+    /// whether something draws the icons.
     struct Watcher {
         registered: mpsc::UnboundedSender<String>,
+        hosted: Arc<std::sync::atomic::AtomicBool>,
     }
 
     #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
@@ -822,6 +1021,32 @@ mod tests {
         fn register_status_notifier_item(&self, service: &str) {
             let _ = self.registered.unbounded_send(service.to_owned());
         }
+
+        #[zbus(property)]
+        fn is_status_notifier_host_registered(&self) -> bool {
+            self.hosted.load(Ordering::SeqCst)
+        }
+
+        #[zbus(signal)]
+        async fn status_notifier_host_registered(
+            emitter: &SignalEmitter<'_>,
+        ) -> zbus::Result<()>;
+    }
+
+    fn dot(red: u8) -> Icon {
+        Icon::from_rgba(vec![red, 0, 0, 255], 1, 1).unwrap()
+    }
+
+    /// The pixels of a PNG file.
+    fn pixels(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
+        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        pixels.truncate(info.buffer_size());
+
+        (info.width, info.height, pixels)
     }
 
     fn icon(red: u8) -> Icon {
@@ -838,7 +1063,40 @@ mod tests {
                 Item::button("open", "Open the _folder"),
                 Item::check("pause", "Pause", false),
                 Item::button("quit", "Quit").enabled(false),
+                Item::submenu(
+                    "Recent",
+                    [
+                        Item::button("recent-a", "a.txt").icon(dot(7)),
+                        Item::submenu(
+                            "Older",
+                            [Item::button("recent-b", "b.txt")],
+                        ),
+                    ],
+                )
+                .icon(dot(200)),
             ])
+    }
+
+    /// The items below an item of a layout.
+    fn children(layout: &OwnedLayout) -> Vec<OwnedLayout> {
+        layout
+            .2
+            .iter()
+            .map(|child| child.try_clone().unwrap().try_into().unwrap())
+            .collect()
+    }
+
+    fn bytes(layout: &OwnedLayout, name: &str) -> Option<Vec<u8>> {
+        layout.1.get(name).map(|value| {
+            Vec::<u8>::try_from(value.try_clone().unwrap()).unwrap()
+        })
+    }
+
+    fn string(layout: &OwnedLayout, name: &str) -> Option<String> {
+        layout
+            .1
+            .get(name)
+            .map(|value| String::try_from(value.try_clone().unwrap()).unwrap())
     }
 
     async fn host(address: &str) -> zbus::Connection {
@@ -852,11 +1110,33 @@ mod tests {
     async fn watcher(
         address: &str,
     ) -> (zbus::Connection, mpsc::UnboundedReceiver<String>) {
+        let (connection, registrations, _) = watcher_with(address, true).await;
+
+        (connection, registrations)
+    }
+
+    /// A watcher, and whether something draws its icons (which can be
+    /// changed: [`host_arrives`]).
+    async fn watcher_with(
+        address: &str,
+        is_hosted: bool,
+    ) -> (
+        zbus::Connection,
+        mpsc::UnboundedReceiver<String>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
         let (registered, registrations) = mpsc::unbounded();
+        let hosted = Arc::new(std::sync::atomic::AtomicBool::new(is_hosted));
 
         let connection = zbus::connection::Builder::address(address)
             .unwrap()
-            .serve_at(WATCHER_PATH, Watcher { registered })
+            .serve_at(
+                WATCHER_PATH,
+                Watcher {
+                    registered,
+                    hosted: hosted.clone(),
+                },
+            )
             .unwrap()
             .name(WATCHER)
             .unwrap()
@@ -864,7 +1144,25 @@ mod tests {
             .await
             .unwrap();
 
-        (connection, registrations)
+        (connection, registrations, hosted)
+    }
+
+    /// A panel starts to draw the icons of the watcher.
+    async fn host_arrives(
+        watcher: &zbus::Connection,
+        hosted: &std::sync::atomic::AtomicBool,
+    ) {
+        hosted.store(true, Ordering::SeqCst);
+
+        let interface = watcher
+            .object_server()
+            .interface::<_, Watcher>(WATCHER_PATH)
+            .await
+            .unwrap();
+
+        Watcher::status_notifier_host_registered(interface.signal_emitter())
+            .await
+            .unwrap();
     }
 
     async fn property<T>(
@@ -944,6 +1242,7 @@ mod tests {
         let _alone = super::super::TESTS
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        super::super::forget();
         let mut events = super::super::listen();
 
         block_on(async {
@@ -1012,8 +1311,76 @@ mod tests {
                 assert_eq!(revision, 1);
                 assert_eq!(
                     labels(&root),
-                    ["Up to date", "-", "Open the __folder", "Pause", "Quit"]
+                    [
+                        "Up to date",
+                        "-",
+                        "Open the __folder",
+                        "Pause",
+                        "Quit",
+                        "Recent"
+                    ]
                 );
+
+                // "Recent" opens a menu of its own and has a picture, as
+                // has the first item inside; the second opens one more
+                let recent = &children(&root)[5];
+                assert_eq!(recent.0, 6);
+                assert_eq!(
+                    string(recent, "children-display").as_deref(),
+                    Some("submenu")
+                );
+                assert_eq!(
+                    pixels(&bytes(recent, "icon-data").unwrap()),
+                    (1, 1, vec![200, 0, 0, 255])
+                );
+
+                let inside = children(recent);
+                assert_eq!(labels(recent), ["a.txt", "Older"]);
+                assert_eq!(inside[0].0, 7);
+                assert_eq!(
+                    pixels(&bytes(&inside[0], "icon-data").unwrap()),
+                    (1, 1, vec![7, 0, 0, 255])
+                );
+                assert_eq!(string(&inside[0], "children-display"), None);
+                assert_eq!(inside[1].0, 8);
+                assert_eq!(labels(&inside[1]), ["b.txt"]);
+                assert_eq!(children(&inside[1])[0].0, 9);
+                assert_eq!(bytes(&children(&inside[1])[0], "icon-data"), None);
+
+                // Asked for one level only, the desktop gets one level;
+                // asked for a submenu, it gets that
+                let (_, shallow): (u32, OwnedLayout) = host
+                    .call_method(
+                        Some(item.as_str()),
+                        MENU_PATH,
+                        Some("com.canonical.dbusmenu"),
+                        "GetLayout",
+                        &(0i32, 1i32, Vec::<String>::new()),
+                    )
+                    .await
+                    .unwrap()
+                    .body()
+                    .deserialize()
+                    .unwrap();
+                assert_eq!(children(&shallow).len(), 6);
+                assert!(children(&shallow)[5].2.is_empty());
+
+                let (_, older): (u32, OwnedLayout) = host
+                    .call_method(
+                        Some(item.as_str()),
+                        MENU_PATH,
+                        Some("com.canonical.dbusmenu"),
+                        "GetLayout",
+                        &(8i32, -1i32, vec!["label".to_owned()]),
+                    )
+                    .await
+                    .unwrap()
+                    .body()
+                    .deserialize()
+                    .unwrap();
+                assert_eq!(string(&older, "label").as_deref(), Some("Older"));
+                assert_eq!(string(&older, "children-display"), None);
+                assert_eq!(labels(&older), ["b.txt"]);
 
                 // A click on the icon, on "Open", on the disabled "Quit"
                 // (which tells nothing) and on "Pause"
@@ -1028,7 +1395,9 @@ mod tests {
                     .await
                     .unwrap();
 
-                for id in [3i32, 5, 4] {
+                // ... then on "Recent" itself (which only opens), on
+                // "b.txt" two menus deep and on "a.txt"
+                for id in [3i32, 5, 4, 6, 9, 7] {
                     let _ = host
                         .call_method(
                             Some(item.as_str()),
@@ -1041,6 +1410,8 @@ mod tests {
                         .unwrap();
                 }
 
+                // The watcher has a host: the desktop shows the icon
+                assert_eq!(events.next().await, Some(Event::Available));
                 assert_eq!(events.next().await, Some(Event::Click));
                 assert_eq!(
                     events.next().await,
@@ -1049,6 +1420,14 @@ mod tests {
                 assert_eq!(
                     events.next().await,
                     Some(Event::MenuItem("pause".to_owned()))
+                );
+                assert_eq!(
+                    events.next().await,
+                    Some(Event::MenuItem("recent-b".to_owned()))
+                );
+                assert_eq!(
+                    events.next().await,
+                    Some(Event::MenuItem("recent-a".to_owned()))
                 );
 
                 // The program changes the menu and the icon: the desktop
@@ -1072,12 +1451,28 @@ mod tests {
                 changed.menu.items[3] = Item::check("pause", "Pause", true);
                 updates.unbounded_send(changed.clone()).unwrap();
 
-                // Then an item more: only that is a new layout
-                changed.menu.items.push(Item::button("more", "More"));
+                // Then a file renamed inside the submenu: still in place
+                changed.menu.items[5] = Item::submenu(
+                    "Recent",
+                    [
+                        Item::button("recent-a", "a.txt").icon(dot(7)),
+                        Item::submenu(
+                            "Older",
+                            [Item::button("recent-c", "c.txt")],
+                        ),
+                    ],
+                )
+                .icon(dot(200));
+                updates.unbounded_send(changed.clone()).unwrap();
+
+                // Then an item more inside it: only that is a new layout
+                if let Item::Submenu { menu, .. } = &mut changed.menu.items[5] {
+                    menu.items.push(Item::button("more", "More"));
+                }
                 updates.unbounded_send(changed).unwrap();
 
                 let mut signals = Vec::new();
-                while signals.len() < 4 {
+                while signals.len() < 5 {
                     let message = changes.next().await.unwrap().unwrap();
                     signals
                         .push(message.header().member().unwrap().to_string());
@@ -1088,8 +1483,25 @@ mod tests {
                         "NewIcon",
                         "NewToolTip",
                         "ItemsPropertiesUpdated",
+                        "ItemsPropertiesUpdated",
                         "LayoutUpdated"
                     ]
+                );
+
+                // The renamed file is chosen by its new identifier
+                let _ = host
+                    .call_method(
+                        Some(item.as_str()),
+                        MENU_PATH,
+                        Some("com.canonical.dbusmenu"),
+                        "Event",
+                        &(9i32, "clicked", Value::from(0i32), 0u32),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    events.next().await,
+                    Some(Event::MenuItem("recent-c".to_owned()))
                 );
 
                 let (revision, root) = layout(&host, &item).await;
@@ -1112,6 +1524,10 @@ mod tests {
                 let (_second, mut registrations) = watcher(&bus.address).await;
                 assert_eq!(registrations.next().await.unwrap(), item);
 
+                // In between there was no tray
+                assert_eq!(events.next().await, Some(Event::Unavailable));
+                assert_eq!(events.next().await, Some(Event::Available));
+
                 // The program takes the icon away: its name leaves the bus
                 drop(updates);
                 item
@@ -1124,5 +1540,116 @@ mod tests {
             let name = zbus::names::BusName::try_from(item).unwrap();
             assert!(!dbus.name_has_owner(name).await.unwrap());
         });
+    }
+
+    #[test]
+    fn a_desktop_without_a_tray_is_told_and_a_tray_that_comes_later_too() {
+        let Some(bus) = Bus::start() else {
+            eprintln!("no dbus-daemon here: the tray is not tested");
+            return;
+        };
+
+        let _alone = super::super::TESTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        super::super::forget();
+        let mut events = super::super::listen();
+
+        block_on(async {
+            let (updates, receiver) = mpsc::unbounded();
+            let serving = serve(settings(), receiver, Some(&bus.address));
+
+            let playing = async {
+                // Nothing on the bus watches for icons: no tray here
+                assert_eq!(events.next().await, Some(Event::Unavailable));
+                assert_eq!(super::super::is_available(), Some(false));
+
+                // A watcher comes, with nothing that draws its icons yet
+                // (the service of the desktop before its panel): the item
+                // registers, and there is still no tray
+                let (watcher, mut registrations, hosted) =
+                    watcher_with(&bus.address, false).await;
+                let item = registrations.next().await.unwrap();
+                assert_eq!(super::super::is_available(), Some(false));
+
+                // The panel comes
+                host_arrives(&watcher, &hosted).await;
+                assert_eq!(events.next().await, Some(Event::Available));
+                assert_eq!(super::super::is_available(), Some(true));
+
+                // Who listens from now on is told at once
+                let mut late = super::super::listen();
+                assert_eq!(late.next().await, Some(Event::Available));
+
+                // The watcher leaves the bus: no tray again
+                drop(watcher);
+                assert_eq!(events.next().await, Some(Event::Unavailable));
+                assert_eq!(late.next().await, Some(Event::Unavailable));
+
+                drop(updates);
+                item
+            };
+
+            let (served, _item) = future::join(serving, playing).await;
+            served.unwrap();
+        });
+
+        super::super::forget();
+    }
+
+    #[test]
+    fn a_menu_that_keeps_its_shape_changes_in_place() {
+        let menu = |name: &str, more: bool| {
+            let mut inside = vec![Item::button("a", name)];
+
+            if more {
+                inside.push(Item::separator());
+            }
+
+            Menu::new([
+                Item::label("Status"),
+                Item::submenu("Recent", inside),
+                Item::button("quit", "Quit"),
+            ])
+        };
+
+        assert!(matches!(
+            MenuChange::between(&menu("a.txt", false), &menu("a.txt", false)),
+            MenuChange::None
+        ));
+
+        // A label inside a submenu: the item 3 (1 "Status", 2 "Recent",
+        // 3 the one inside, 4 "Quit")
+        match MenuChange::between(&menu("a.txt", false), &menu("b.txt", false))
+        {
+            MenuChange::Properties { updated, removed } => {
+                assert_eq!(updated.len(), 1);
+                assert_eq!(updated[0].0, 3);
+                assert_eq!(
+                    updated[0].1.get("label"),
+                    Some(&Value::from("b.txt"))
+                );
+                assert!(removed.is_empty());
+            }
+            _ => panic!("not in place"),
+        }
+
+        // One more item inside: a new layout
+        assert!(matches!(
+            MenuChange::between(&menu("a.txt", false), &menu("a.txt", true)),
+            MenuChange::Layout
+        ));
+
+        // A picture that goes away is a property that goes away
+        let with = Menu::new([Item::button("a", "A").icon(dot(1))]);
+        let without = Menu::new([Item::button("a", "A")]);
+
+        match MenuChange::between(&with, &without) {
+            MenuChange::Properties { updated, removed } => {
+                assert!(updated.is_empty());
+                assert_eq!(removed, [(1, vec!["icon-data".to_owned()])]);
+            }
+            _ => panic!("not in place"),
+        }
     }
 }

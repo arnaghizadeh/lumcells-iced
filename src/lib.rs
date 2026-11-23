@@ -640,7 +640,8 @@ pub mod tray {
     //! Give the settings to `iced::daemon(..).tray(settings)`, change the
     //! icon later with [`update`], and listen to it with [`events`].
     pub use crate::shell::tray::{
-        Event, Icon, IconError, Item, Menu, Settings, events, remove, update,
+        Event, Icon, IconError, Item, Menu, Settings, events, is_available,
+        remove, update,
     };
 }
 

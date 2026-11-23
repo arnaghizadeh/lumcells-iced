@@ -2,7 +2,10 @@
 //! made, changed and dropped on the thread of the event loop.
 use crate::runtime::tray::{Event, Icon, Item, Menu, Settings};
 
-use tray_icon::menu::{CheckMenuItem, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{
+    CheckMenuItem, IconMenuItem, IsMenuItem, MenuEvent, MenuItem,
+    PredefinedMenuItem, Submenu,
+};
 use tray_icon::{
     MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
@@ -308,9 +311,35 @@ fn icon(icon: &Icon) -> Option<tray_icon::Icon> {
     .ok()
 }
 
+/// The picture of an item of the menu.
+fn item_icon(icon: Option<&Icon>) -> Option<tray_icon::menu::Icon> {
+    let icon = icon?;
+
+    tray_icon::menu::Icon::from_rgba(
+        icon.rgba().to_vec(),
+        icon.width(),
+        icon.height(),
+    )
+    .map_err(|error| {
+        log::error!("the picture of a menu item is not valid: {error}");
+    })
+    .ok()
+}
+
 fn menu(menu: &Menu) -> tray_icon::menu::Menu {
     let raw = tray_icon::menu::Menu::new();
 
+    fill(&|item| raw.append(item), menu);
+
+    raw
+}
+
+/// Appends the items of a [`Menu`], and of the menus inside it, with the
+/// given function.
+fn fill(
+    append: &dyn Fn(&dyn IsMenuItem) -> tray_icon::menu::Result<()>,
+    menu: &Menu,
+) {
     for item in &menu.items {
         let result = match item {
             Item::Button {
@@ -318,31 +347,56 @@ fn menu(menu: &Menu) -> tray_icon::menu::Menu {
                 label,
                 enabled,
                 checked: None,
-            } => raw.append(&MenuItem::with_id(
+                icon: None,
+            } => append(&MenuItem::with_id(id.as_str(), label, *enabled, None)),
+            Item::Button {
+                id,
+                label,
+                enabled,
+                checked: None,
+                icon: icon @ Some(_),
+            } => append(&IconMenuItem::with_id(
                 id.as_str(),
                 label,
                 *enabled,
+                item_icon(icon.as_ref()),
                 None,
             )),
+            // Either a tick or a picture: the tick tells more
             Item::Button {
                 id,
                 label,
                 enabled,
                 checked: Some(checked),
-            } => raw.append(&CheckMenuItem::with_id(
+                ..
+            } => append(&CheckMenuItem::with_id(
                 id.as_str(),
                 label,
                 *enabled,
                 *checked,
                 None,
             )),
-            Item::Separator => raw.append(&PredefinedMenuItem::separator()),
+            Item::Submenu {
+                label,
+                enabled,
+                icon,
+                menu,
+            } => {
+                let submenu = Submenu::new(label, *enabled);
+
+                if let Some(icon) = item_icon(icon.as_ref()) {
+                    submenu.set_icon(Some(icon));
+                }
+
+                fill(&|item| submenu.append(item), menu);
+
+                append(&submenu)
+            }
+            Item::Separator => append(&PredefinedMenuItem::separator()),
         };
 
         if let Err(error) = result {
             log::error!("an item of the tray menu could not be added: {error}");
         }
     }
-
-    raw
 }

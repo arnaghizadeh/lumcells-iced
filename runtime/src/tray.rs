@@ -203,6 +203,22 @@ pub enum Item {
         enabled: bool,
         /// `Some` makes it an item with a tick: whether it is ticked.
         checked: Option<bool>,
+        /// A small picture before the text (16 pixels suit every desktop).
+        ///
+        /// Windows and macOS draw either a tick or a picture: an item
+        /// with a tick shows no picture there.
+        icon: Option<Icon>,
+    },
+    /// A line of text that opens a menu of its own beside it.
+    Submenu {
+        /// The text.
+        label: String,
+        /// Whether it can be opened; if not, it is shown greyed.
+        enabled: bool,
+        /// A small picture before the text.
+        icon: Option<Icon>,
+        /// The items of the menu it opens.
+        menu: Menu,
     },
     /// A line between two groups of items.
     Separator,
@@ -216,6 +232,7 @@ impl Item {
             label: label.into(),
             enabled: true,
             checked: None,
+            icon: None,
         }
     }
 
@@ -231,6 +248,7 @@ impl Item {
             label: label.into(),
             enabled: true,
             checked: Some(checked),
+            icon: None,
         }
     }
 
@@ -241,6 +259,18 @@ impl Item {
             label: label.into(),
             enabled: false,
             checked: None,
+            icon: None,
+        }
+    }
+
+    /// A line of text that opens a menu of its own. The items inside are
+    /// chosen like any other: [`Event::MenuItem`] carries their `id`.
+    pub fn submenu(label: impl Into<String>, menu: impl Into<Menu>) -> Self {
+        Item::Submenu {
+            label: label.into(),
+            enabled: true,
+            icon: None,
+            menu: menu.into(),
         }
     }
 
@@ -249,10 +279,23 @@ impl Item {
         Item::Separator
     }
 
-    /// Sets whether the item can be chosen.
+    /// Sets whether the item can be chosen (or opened).
     pub fn enabled(mut self, is_enabled: bool) -> Self {
-        if let Item::Button { enabled, .. } = &mut self {
+        if let Item::Button { enabled, .. } | Item::Submenu { enabled, .. } =
+            &mut self
+        {
             *enabled = is_enabled;
+        }
+
+        self
+    }
+
+    /// Sets a small picture before the text of the item.
+    pub fn icon(mut self, picture: Icon) -> Self {
+        if let Item::Button { icon, .. } | Item::Submenu { icon, .. } =
+            &mut self
+        {
+            *icon = Some(picture);
         }
 
         self
@@ -271,6 +314,25 @@ pub enum Event {
     /// with the AppIndicator extension, macOS), this does not come, so the
     /// menu should offer the same thing ("Open").
     Click,
+    /// The desktop shows tray icons, and was given this one.
+    ///
+    /// Comes once after the icon is made, and again when a tray appears
+    /// on a desktop that had none (a panel was started, an extension
+    /// turned on). A subscription that starts later is told the latest of
+    /// [`Available`](Self::Available) and
+    /// [`Unavailable`](Self::Unavailable) first.
+    Available,
+    /// There is no tray here: nothing on this desktop shows tray icons,
+    /// so the person cannot see or reach the icon. A program that lives
+    /// in the tray should not hide its last window now, or should say how
+    /// to get it back.
+    ///
+    /// Linux only: no `org.kde.StatusNotifierWatcher` is on the session
+    /// bus (GNOME without the AppIndicator extension, a bare window
+    /// manager), or it has no host that draws the icons, or there is no
+    /// session bus at all. Windows and macOS always have a place for the
+    /// icon; there it comes only if the icon could not be made.
+    Unavailable,
 }
 
 /// A tray operation, for the shell.
@@ -342,7 +404,8 @@ mod tests {
                 id: String::new(),
                 label: "Up to date".into(),
                 enabled: false,
-                checked: None
+                checked: None,
+                icon: None
             }
         );
         assert_eq!(
@@ -351,12 +414,50 @@ mod tests {
                 id: "pause".into(),
                 label: "Pause".into(),
                 enabled: true,
-                checked: Some(true)
+                checked: Some(true),
+                icon: None
             }
         );
         assert!(matches!(
             &menu.items[4],
             Item::Button { enabled: false, .. }
         ));
+    }
+
+    #[test]
+    fn an_item_can_open_a_menu_and_carry_a_picture() {
+        let dot = Icon::from_rgba(vec![255; 4], 1, 1).unwrap();
+
+        let item = Item::submenu(
+            "Recent",
+            [
+                Item::button("a", "a.txt").icon(dot.clone()),
+                Item::button("b", "b.txt"),
+            ],
+        )
+        .icon(dot.clone())
+        .enabled(false);
+
+        let Item::Submenu {
+            label,
+            enabled,
+            icon,
+            menu,
+        } = item
+        else {
+            panic!("not a submenu");
+        };
+
+        assert_eq!(label, "Recent");
+        assert!(!enabled);
+        assert_eq!(icon, Some(dot.clone()));
+        assert_eq!(menu.items.len(), 2);
+        assert!(matches!(
+            &menu.items[0],
+            Item::Button { icon: Some(icon), .. } if *icon == dot
+        ));
+
+        // A separator takes neither
+        assert_eq!(Item::separator().icon(dot).enabled(false), Item::Separator);
     }
 }
