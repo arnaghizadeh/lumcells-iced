@@ -17,6 +17,7 @@ pub mod keyboard;
 pub mod shell;
 pub mod system;
 pub mod task;
+pub mod tray;
 pub mod user_interface;
 pub mod widget;
 pub mod window;
@@ -61,6 +62,9 @@ pub enum Action<T> {
     /// An image action.
     Image(image::Action),
 
+    /// Run a tray icon action.
+    Tray(tray::Action),
+
     /// Recreate all user interfaces and redraw all windows.
     Reload,
 
@@ -88,6 +92,7 @@ impl<T> Action<T> {
             Action::Window(action) => Err(Action::Window(action)),
             Action::System(action) => Err(Action::System(action)),
             Action::Image(action) => Err(Action::Image(action)),
+            Action::Tray(action) => Err(Action::Tray(action)),
             Action::Reload => Err(Action::Reload),
             Action::Exit => Err(Action::Exit),
         }
@@ -113,6 +118,7 @@ where
             Action::Window(_) => write!(f, "Action::Window"),
             Action::System(action) => write!(f, "Action::System({action:?})"),
             Action::Image(_) => write!(f, "Action::Image"),
+            Action::Tray(action) => write!(f, "Action::Tray({action:?})"),
             Action::Reload => write!(f, "Action::Reload"),
             Action::Exit => write!(f, "Action::Exit"),
         }

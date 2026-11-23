@@ -16,10 +16,19 @@ pub struct Settings {
     ///
     /// By default, it is enabled.
     pub tab_focus: bool,
+
+    /// The tray icon the program starts with, if any; see
+    /// [`tray`](crate::tray).
+    ///
+    /// By default, there is none.
+    pub tray: Option<crate::tray::Settings>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { tab_focus: true }
+        Self {
+            tab_focus: true,
+            tray: None,
+        }
     }
 }

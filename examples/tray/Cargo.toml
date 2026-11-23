@@ -1,0 +1,10 @@
+[package]
+name = "tray"
+version = "0.1.0"
+authors = ["Lumcells Engineering <engineering@lumcells.com>"]
+edition = "2024"
+publish = false
+
+[dependencies]
+iced.workspace = true
+iced.features = ["tokio"]

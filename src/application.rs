@@ -225,6 +225,13 @@ impl<P: Program> Application<P> {
         self
     }
 
+    /// Sets the tray icon the [`Application`] starts with; see
+    /// [`tray`](crate::tray).
+    pub fn tray(mut self, tray: crate::tray::Settings) -> Self {
+        self.shell.tray = Some(tray);
+        self
+    }
+
     /// Sets the [`Settings`] that will be used to run the [`Application`].
     pub fn settings(self, settings: Settings) -> Self {
         Self { settings, ..self }

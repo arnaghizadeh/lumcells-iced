@@ -599,6 +599,29 @@ pub mod mouse {
     };
 }
 
+pub mod tray {
+    //! Show an icon with a menu in the tray of the desktop.
+    //!
+    //! ```no_run
+    //! use iced::tray;
+    //!
+    //! # fn icon() -> tray::Icon { unimplemented!() }
+    //! let settings = tray::Settings::new(icon())
+    //!     .tooltip("Up to date")
+    //!     .menu([
+    //!         tray::Item::button("open", "Open"),
+    //!         tray::Item::separator(),
+    //!         tray::Item::button("quit", "Quit"),
+    //!     ]);
+    //! ```
+    //!
+    //! Give the settings to `iced::daemon(..).tray(settings)`, change the
+    //! icon later with [`update`], and listen to it with [`events`].
+    pub use crate::shell::tray::{
+        Event, Icon, IconError, Item, Menu, Settings, events, remove, update,
+    };
+}
+
 pub mod system {
     //! Retrieve system information.
     pub use crate::runtime::system::{theme, theme_changes};

@@ -164,6 +164,13 @@ impl<P: Program> Daemon<P> {
         self
     }
 
+    /// Sets the tray icon the [`Daemon`] starts with; see
+    /// [`tray`](crate::tray).
+    pub fn tray(mut self, tray: crate::tray::Settings) -> Self {
+        self.shell.tray = Some(tray);
+        self
+    }
+
     /// Sets the [`Settings`] that will be used to run the [`Daemon`].
     pub fn settings(self, settings: Settings) -> Self {
         Self { settings, ..self }

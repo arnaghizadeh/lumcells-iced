@@ -22,7 +22,7 @@ all-features = true
 maintenance = { status = "actively-developed" }
 
 [features]
-default = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "x11", "wayland"]
+default = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "x11", "wayland", "tray"]
 # Enables the `wgpu` GPU-accelerated renderer with all its default features (Vulkan, Metal, DX12, OpenGL, and WebGPU)
 wgpu = ["wgpu-bare", "iced_renderer/wgpu"]
 # Enables the `wgpu` GPU-accelerated renderer with the minimum required features (no backends!)
@@ -85,6 +85,8 @@ unconditional-rendering = ["iced_winit/unconditional-rendering"]
 sipper = ["iced_runtime/sipper"]
 # Enables Linux system theme detection
 linux-theme-detection = ["iced_winit/linux-theme-detection"]
+# Enables the tray icon (`iced::tray`): StatusNotifierItem over D-Bus on Linux, `tray-icon` on macOS and Windows
+tray = ["iced_winit/tray"]
 # Enables the Unix X11 backend
 x11 = ["iced_renderer/x11", "iced_winit/x11"]
 # Enables the Unix Wayland backend
@@ -204,6 +206,9 @@ log = "0.4"
 lyon = "1.0"
 lyon_path = "1.0"
 mundy = { version = "0.2", default-features = false }
+# 0.24 builds with Rust 1.88 (0.25 and later ask for 1.90)
+tray-icon = { version = "0.24.2", default-features = false }
+zbus = { version = "5", default-features = false, features = ["async-io"] }
 nom = "8"
 num-traits = "0.2"
 ouroboros = "0.18"

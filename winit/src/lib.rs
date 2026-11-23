@@ -28,6 +28,7 @@ pub use winit;
 
 pub mod clipboard;
 pub mod conversion;
+pub mod tray;
 
 mod error;
 mod proxy;
@@ -560,6 +561,17 @@ async fn run_instance<P>(
 
     log::info!("System theme: {system_theme:?}");
 
+    // The tray icon the program starts with. This runs at the first poll of
+    // the instance: inside the event loop, on its thread.
+    let mut tray = tray::Tray::default();
+    let mut shell_settings = shell_settings;
+
+    if let Some(settings) = shell_settings.tray.take() {
+        tray.perform(runtime::tray::Action::Update(settings), |stream| {
+            spawn(&mut runtime, stream);
+        });
+    }
+
     'next_event: loop {
         // Empty the queue if possible
         let event = if let Ok(event) = event_receiver.try_next() {
@@ -763,6 +775,7 @@ async fn run_instance<P>(
                             &mut ui_caches,
                             &mut is_window_opening,
                             &mut system_theme,
+                            &mut tray,
                         );
                         actions += 1;
                     }
@@ -899,6 +912,7 @@ async fn run_instance<P>(
                                         &mut ui_caches,
                                         &mut is_window_opening,
                                         &mut system_theme,
+                                        &mut tray,
                                     );
                                 }
 
@@ -1106,6 +1120,7 @@ async fn run_instance<P>(
                                 &mut ui_caches,
                                 &mut is_window_opening,
                                 &mut system_theme,
+                                &mut tray,
                             );
                         } else {
                             window.state.update(
@@ -1268,6 +1283,7 @@ async fn run_instance<P>(
                                     &mut ui_caches,
                                     &mut is_window_opening,
                                     &mut system_theme,
+                                    &mut tray,
                                 );
                             }
 
@@ -1295,6 +1311,24 @@ async fn run_instance<P>(
     }
 
     let _ = ManuallyDrop::into_inner(user_interfaces);
+}
+
+/// Runs a stream that yields nothing on the executor of the [`Runtime`],
+/// until it ends.
+fn spawn<E, Message>(
+    runtime: &mut Runtime<E, Proxy<Message>, Action<Message>>,
+    stream: futures::futures::stream::BoxStream<'static, ()>,
+) where
+    E: Executor,
+    Message: Send + 'static,
+{
+    use futures::futures::StreamExt;
+
+    runtime.run(
+        stream
+            .filter_map(|()| futures::futures::future::ready(None))
+            .boxed(),
+    );
 }
 
 /// Builds a window's [`UserInterface`] for the [`Program`].
@@ -1381,6 +1415,7 @@ fn run_action<'a, P, C>(
     ui_caches: &mut FxHashMap<window::Id, user_interface::Cache>,
     is_window_opening: &mut bool,
     system_theme: &mut theme::Mode,
+    tray: &mut tray::Tray,
 ) where
     P: Program,
     C: Compositor<Renderer = P::Renderer> + 'static,
@@ -1779,6 +1814,9 @@ fn run_action<'a, P, C>(
                     }
                 }
             }
+        }
+        Action::Tray(action) => {
+            tray.perform(action, |stream| spawn(runtime, stream));
         }
         Action::Image(action) => match action {
             image::Action::Allocate(handle, sender) => {
