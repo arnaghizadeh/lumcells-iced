@@ -337,7 +337,7 @@ impl fmt::Display for Mouse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Mouse::Move(target) => {
-                write!(f, "move {}", target)
+                write!(f, "move {target}")
             }
             Mouse::Press { button, target } => {
                 write!(
@@ -447,7 +447,7 @@ mod format {
             if button.is_empty() {
                 at.to_string()
             } else {
-                format!("{} {}", button, at)
+                format!("{button} {at}")
             }
         } else {
             button.to_owned()

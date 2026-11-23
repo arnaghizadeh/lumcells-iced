@@ -10,6 +10,12 @@ on top of the upstream `0.14` branch. Newest last.
 
 ### Added
 - One CI workflow for the fork (`.github/workflows/ci.yml`): `cargo check --workspace` and the unit tests on Linux, Windows and macOS, clippy and rustfmt on Linux, the examples of the fork built, tested and started under Xvfb (`.github/scripts/fork-examples.sh`). Upstream's workflows are removed.
+- Keyboard focus on every control. `Button`, `Checkbox`, `Toggler`, `Radio` and `PickList` implement `operation::Focusable` (so `focus_next`, `focus_previous`, `focus(id)` reach them) and take an `id`; Enter and Space activate the focused one, the arrows choose in a focused `PickList` (Enter opens it, Escape closes it); a click elsewhere takes the focus away. Their `Status` enums have a new `Focused` variant and the built-in theme draws a two-pixel ring for it (`button::focus_ring`, `checkbox::focus_ring` for custom styles). Example `focus_ring`.
+- Tab and Shift+Tab move the focus by default in `iced_winit` when no widget captured the key; such a key press is then broadcast as captured, so an application that wired Tab by hand does not move twice. `application(..).tab_focus(false)` and `daemon(..).tab_focus(false)` turn it off. The settings of the fork travel in `iced_runtime::shell::Settings` through the new `Program::shell` (which has a default), not in `Settings`.
+- `iced_test`: `Simulator::operate` runs a widget operation and returns its output; the `Simulator` moves the focus on Tab as the shell does.
+
+### Changed
+- **Breaking for exhaustive matches:** `button::Status`, `checkbox::Status`, `toggler::Status`, `radio::Status` and `pick_list::Status` have the new variant `Focused`. A style function written for `0.14.0` with a `match` over every variant needs one more arm (or `_`); everything else of the `0.14.0` API builds as before.
 
 ## [Unreleased]
 

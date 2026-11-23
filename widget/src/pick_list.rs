@@ -69,6 +69,8 @@ use crate::core::renderer;
 use crate::core::text::paragraph;
 use crate::core::text::{self, Text};
 use crate::core::touch;
+use crate::core::widget;
+use crate::core::widget::operation;
 use crate::core::widget::tree::{self, Tree};
 use crate::core::window;
 use crate::core::{
@@ -173,6 +175,7 @@ pub struct PickList<
     class: <Theme as Catalog>::Class<'a>,
     menu_class: <Theme as menu::Catalog>::Class<'a>,
     last_status: Option<Status>,
+    id: Option<widget::Id>,
     menu_height: Length,
 }
 
@@ -210,8 +213,18 @@ where
             class: <Theme as Catalog>::default(),
             menu_class: <Theme as Catalog>::default_menu(),
             last_status: None,
+            id: None,
             menu_height: Length::Shrink,
         }
+    }
+
+    /// Sets the [`widget::Id`] of the [`PickList`].
+    ///
+    /// The identifier can be used to focus it with
+    /// [`operation::focus`](crate::core::widget::operation::focusable::focus).
+    pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     /// Sets the placeholder of the [`PickList`].
@@ -447,7 +460,103 @@ where
     ) {
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
 
+        // A click elsewhere takes the keyboard focus away, whoever
+        // captured it
+        if let Event::Mouse(mouse::Event::ButtonPressed(_))
+        | Event::Touch(touch::Event::FingerPressed { .. }) = event
+            && state.is_focused
+            && !cursor.is_over(layout.bounds())
+        {
+            state.is_focused = false;
+            shell.request_redraw();
+        }
+
         match event {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(key),
+                ..
+            }) if state.is_focused && !shell.is_event_captured() => {
+                use keyboard::key::Named;
+
+                let options = self.options.borrow();
+                let selected = self.selected.as_ref().map(Borrow::borrow);
+
+                match key {
+                    Named::Enter | Named::Space if state.is_open => {
+                        // Choose the option the keyboard (or the pointer)
+                        // is on
+                        if let Some(option) = state
+                            .hovered_option
+                            .and_then(|index| options.get(index))
+                        {
+                            shell.publish((self.on_select)(option.clone()));
+                        }
+
+                        state.is_open = false;
+
+                        if let Some(on_close) = &self.on_close {
+                            shell.publish(on_close.clone());
+                        }
+
+                        shell.capture_event();
+                    }
+                    Named::Enter | Named::Space => {
+                        state.is_open = true;
+                        state.hovered_option = options
+                            .iter()
+                            .position(|option| Some(option) == selected);
+
+                        if let Some(on_open) = &self.on_open {
+                            shell.publish(on_open.clone());
+                        }
+
+                        shell.capture_event();
+                    }
+                    Named::Escape if state.is_open => {
+                        state.is_open = false;
+
+                        if let Some(on_close) = &self.on_close {
+                            shell.publish(on_close.clone());
+                        }
+
+                        shell.capture_event();
+                    }
+                    Named::ArrowDown | Named::ArrowUp
+                        if !options.is_empty() =>
+                    {
+                        let current = if state.is_open {
+                            state.hovered_option
+                        } else {
+                            options
+                                .iter()
+                                .position(|option| Some(option) == selected)
+                        };
+
+                        let next = match (current, key) {
+                            (None, Named::ArrowDown) => 0,
+                            (None, _) => options.len() - 1,
+                            (Some(index), Named::ArrowDown) => {
+                                (index + 1).min(options.len() - 1)
+                            }
+                            (Some(index), _) => index.saturating_sub(1),
+                        };
+
+                        if state.is_open {
+                            // Move over the options of the open menu
+                            state.hovered_option = Some(next);
+                            shell.request_redraw();
+                        } else if current != Some(next) {
+                            // Closed: choose the next option at once
+                            shell.publish((self.on_select)(
+                                options[next].clone(),
+                            ));
+                        }
+
+                        shell.capture_event();
+                    }
+                    _ => {}
+                }
+            }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
                 if state.is_open {
@@ -530,6 +639,8 @@ where
 
             if state.is_open {
                 Status::Opened { is_hovered }
+            } else if state.is_focused {
+                Status::Focused
             } else if is_hovered {
                 Status::Hovered
             } else {
@@ -545,6 +656,18 @@ where
         {
             shell.request_redraw();
         }
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
+
+        operation.focusable(self.id.as_ref(), layout.bounds(), state);
     }
 
     fn mouse_interaction(
@@ -764,9 +887,24 @@ struct State<P: text::Paragraph> {
     menu: menu::State,
     keyboard_modifiers: keyboard::Modifiers,
     is_open: bool,
+    is_focused: bool,
     hovered_option: Option<usize>,
     options: Vec<paragraph::Plain<P>>,
     placeholder: paragraph::Plain<P>,
+}
+
+impl<P: text::Paragraph> operation::Focusable for State<P> {
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+
+    fn focus(&mut self) {
+        self.is_focused = true;
+    }
+
+    fn unfocus(&mut self) {
+        self.is_focused = false;
+    }
 }
 
 impl<P: text::Paragraph> State<P> {
@@ -776,6 +914,7 @@ impl<P: text::Paragraph> State<P> {
             menu: menu::State::default(),
             keyboard_modifiers: keyboard::Modifiers::default(),
             is_open: bool::default(),
+            is_focused: false,
             hovered_option: Option::default(),
             options: Vec::new(),
             placeholder: paragraph::Plain::default(),
@@ -845,6 +984,11 @@ pub enum Status {
         /// Whether the [`PickList`] is hovered, while open.
         is_hovered: bool,
     },
+    /// The [`PickList`] has the keyboard focus: Enter and Space open it,
+    /// the arrows choose.
+    ///
+    /// A style is expected to draw a focus ring.
+    Focused,
 }
 
 /// The appearance of a pick list.
@@ -921,6 +1065,16 @@ pub fn default(theme: &Theme, status: Status) -> Style {
         Status::Hovered | Status::Opened { .. } => Style {
             border: Border {
                 color: palette.primary.strong.color,
+                ..active.border
+            },
+            ..active
+        },
+        // The focus ring: a border of two pixels in the color of the text
+        // of the page
+        Status::Focused => Style {
+            border: Border {
+                color: palette.background.base.text,
+                width: 2.0,
                 ..active.border
             },
             ..active

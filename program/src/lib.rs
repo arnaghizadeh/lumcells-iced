@@ -47,6 +47,15 @@ pub trait Program: Sized {
 
     fn window(&self) -> Option<window::Settings>;
 
+    /// Returns the settings of the shell that runs the [`Program`]: what the
+    /// Lumcells fork adds to [`Program::settings`].
+    ///
+    /// A [`Program`] that wraps another one must hand on the settings of the
+    /// one it wraps.
+    fn shell(&self) -> runtime::shell::Settings {
+        runtime::shell::Settings::default()
+    }
+
     fn boot(&self) -> (Self::State, Task<Self::Message>);
 
     fn update(
@@ -155,6 +164,10 @@ pub fn with_title<P: Program>(
             self.program.window()
         }
 
+        fn shell(&self) -> runtime::shell::Settings {
+            self.program.shell()
+        }
+
         fn boot(&self) -> (Self::State, Task<Self::Message>) {
             self.program.boot()
         }
@@ -243,6 +256,10 @@ pub fn with_subscription<P: Program>(
 
         fn window(&self) -> Option<window::Settings> {
             self.program.window()
+        }
+
+        fn shell(&self) -> runtime::shell::Settings {
+            self.program.shell()
         }
 
         fn boot(&self) -> (Self::State, Task<Self::Message>) {
@@ -336,6 +353,10 @@ pub fn with_theme<P: Program>(
             self.program.window()
         }
 
+        fn shell(&self) -> runtime::shell::Settings {
+            self.program.shell()
+        }
+
         fn boot(&self) -> (Self::State, Task<Self::Message>) {
             self.program.boot()
         }
@@ -423,6 +444,10 @@ pub fn with_style<P: Program>(
             self.program.window()
         }
 
+        fn shell(&self) -> runtime::shell::Settings {
+            self.program.shell()
+        }
+
         fn boot(&self) -> (Self::State, Task<Self::Message>) {
             self.program.boot()
         }
@@ -504,6 +529,10 @@ pub fn with_scale_factor<P: Program>(
 
         fn window(&self) -> Option<window::Settings> {
             self.program.window()
+        }
+
+        fn shell(&self) -> runtime::shell::Settings {
+            self.program.shell()
         }
 
         fn boot(&self) -> (Self::State, Task<Self::Message>) {
@@ -595,6 +624,10 @@ pub fn with_executor<P: Program, E: Executor>(
 
         fn window(&self) -> Option<window::Settings> {
             self.program.window()
+        }
+
+        fn shell(&self) -> runtime::shell::Settings {
+            self.program.shell()
         }
 
         fn boot(&self) -> (Self::State, Task<Self::Message>) {

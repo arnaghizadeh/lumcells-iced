@@ -65,6 +65,10 @@ where
         settings
     }
 
+    fn shell(&self) -> crate::runtime::shell::Settings {
+        self.program.shell()
+    }
+
     fn window(&self) -> Option<window::Settings> {
         Some(
             self.program

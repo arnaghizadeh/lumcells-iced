@@ -32,6 +32,7 @@
 //! ```
 //! ![Checkbox drawn by `iced_wgpu`](https://github.com/iced-rs/iced/blob/7760618fb112074bc40b148944521f312152012a/docs/images/checkbox.png?raw=true)
 use crate::core::alignment;
+use crate::core::keyboard;
 use crate::core::layout;
 use crate::core::mouse;
 use crate::core::renderer;
@@ -39,6 +40,7 @@ use crate::core::text;
 use crate::core::theme::palette;
 use crate::core::touch;
 use crate::core::widget;
+use crate::core::widget::operation;
 use crate::core::widget::tree::{self, Tree};
 use crate::core::window;
 use crate::core::{
@@ -102,6 +104,7 @@ pub struct Checkbox<
     icon: Icon<Renderer::Font>,
     class: Theme::Class<'a>,
     last_status: Option<Status>,
+    id: Option<widget::Id>,
 }
 
 impl<'a, Message, Theme, Renderer> Checkbox<'a, Message, Theme, Renderer>
@@ -138,7 +141,17 @@ where
             },
             class: Theme::default(),
             last_status: None,
+            id: None,
         }
+    }
+
+    /// Sets the [`widget::Id`] of the [`Checkbox`].
+    ///
+    /// The identifier can be used to focus it with
+    /// [`operation::focus`](crate::core::widget::operation::focusable::focus).
+    pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     /// Sets the label of the [`Checkbox`].
@@ -250,6 +263,35 @@ where
     }
 }
 
+/// The state of a [`Checkbox`]: its label and whether it has the keyboard focus.
+struct State<P: text::Paragraph> {
+    is_focused: bool,
+    text: widget::text::State<P>,
+}
+
+impl<P: text::Paragraph> Default for State<P> {
+    fn default() -> Self {
+        Self {
+            is_focused: false,
+            text: widget::text::State::default(),
+        }
+    }
+}
+
+impl<P: text::Paragraph> operation::Focusable for State<P> {
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+
+    fn focus(&mut self) {
+        self.is_focused = true;
+    }
+
+    fn unfocus(&mut self) {
+        self.is_focused = false;
+    }
+}
+
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Checkbox<'_, Message, Theme, Renderer>
 where
@@ -257,11 +299,11 @@ where
     Theme: Catalog,
 {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<widget::text::State<Renderer::Paragraph>>()
+        tree::Tag::of::<State<Renderer::Paragraph>>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(widget::text::State::<Renderer::Paragraph>::default())
+        tree::State::new(State::<Renderer::Paragraph>::default())
     }
 
     fn size(&self) -> Size<Length> {
@@ -287,12 +329,11 @@ where
             |_| layout::Node::new(Size::new(self.size, self.size)),
             |limits| {
                 if let Some(label) = self.label.as_deref() {
-                    let state = tree
-                    .state
-                    .downcast_mut::<widget::text::State<Renderer::Paragraph>>();
+                    let state =
+                        tree.state.downcast_mut::<State<Renderer::Paragraph>>();
 
                     widget::text::layout(
-                        state,
+                        &mut state.text,
                         renderer,
                         limits,
                         label,
@@ -317,7 +358,7 @@ where
 
     fn update(
         &mut self,
-        _tree: &mut Tree,
+        tree: &mut Tree,
         event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
@@ -326,6 +367,19 @@ where
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
+        // A click elsewhere takes the keyboard focus away, whoever
+        // captured it
+        if let Event::Mouse(mouse::Event::ButtonPressed(_))
+        | Event::Touch(touch::Event::FingerPressed { .. }) = event
+        {
+            let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
+
+            if state.is_focused && !cursor.is_over(layout.bounds()) {
+                state.is_focused = false;
+                shell.request_redraw();
+            }
+        }
+
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
@@ -336,6 +390,25 @@ where
                     shell.capture_event();
                 }
             }
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key:
+                    keyboard::Key::Named(
+                        keyboard::key::Named::Enter
+                        | keyboard::key::Named::Space,
+                    ),
+                repeat: false,
+                ..
+            }) => {
+                let state =
+                    tree.state.downcast_ref::<State<Renderer::Paragraph>>();
+
+                if state.is_focused && !shell.is_event_captured() {
+                    if let Some(on_toggle) = &self.on_toggle {
+                        shell.publish((on_toggle)(!self.is_checked));
+                        shell.capture_event();
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -343,9 +416,15 @@ where
             let is_mouse_over = cursor.is_over(layout.bounds());
             let is_disabled = self.on_toggle.is_none();
             let is_checked = self.is_checked;
+            let is_focused = tree
+                .state
+                .downcast_ref::<State<Renderer::Paragraph>>()
+                .is_focused;
 
             if is_disabled {
                 Status::Disabled { is_checked }
+            } else if is_focused {
+                Status::Focused { is_checked }
             } else if is_mouse_over {
                 Status::Hovered { is_checked }
             } else {
@@ -445,14 +524,13 @@ where
 
         {
             let label_layout = children.next().unwrap();
-            let state: &widget::text::State<Renderer::Paragraph> =
-                tree.state.downcast_ref();
+            let state: &State<Renderer::Paragraph> = tree.state.downcast_ref();
 
             crate::text::draw(
                 renderer,
                 defaults,
                 label_layout.bounds(),
-                state.raw(),
+                state.text.raw(),
                 crate::text::Style {
                     color: style.text_color,
                 },
@@ -463,11 +541,20 @@ where
 
     fn operate(
         &mut self,
-        _tree: &mut Tree,
+        tree: &mut Tree,
         layout: Layout<'_>,
         _renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
+        let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
+
+        if self.on_toggle.is_some() {
+            operation.focusable(self.id.as_ref(), layout.bounds(), state);
+        } else {
+            // A disabled check box gives up its focus
+            state.is_focused = false;
+        }
+
         if let Some(label) = self.label.as_deref() {
             operation.text(None, layout.bounds(), label);
         }
@@ -518,6 +605,13 @@ pub enum Status {
     },
     /// The [`Checkbox`] cannot be interacted with.
     Disabled {
+        /// Indicates if the [`Checkbox`] is currently checked.
+        is_checked: bool,
+    },
+    /// The [`Checkbox`] has the keyboard focus: Space and Enter toggle it.
+    ///
+    /// A style is expected to draw a focus ring; see [`focus_ring`].
+    Focused {
         /// Indicates if the [`Checkbox`] is currently checked.
         is_checked: bool,
     },
@@ -584,6 +678,16 @@ pub fn primary(theme: &Theme, status: Status) -> Style {
             palette.primary.strong,
             is_checked,
         ),
+        Status::Focused { is_checked } => focus_ring(
+            theme,
+            styled(
+                palette.background.strong.color,
+                palette.background.weak,
+                palette.primary.base.text,
+                palette.primary.strong,
+                is_checked,
+            ),
+        ),
         Status::Disabled { is_checked } => styled(
             palette.background.weak.color,
             palette.background.weaker,
@@ -612,6 +716,16 @@ pub fn secondary(theme: &Theme, status: Status) -> Style {
             palette.background.base.text,
             palette.background.strong,
             is_checked,
+        ),
+        Status::Focused { is_checked } => focus_ring(
+            theme,
+            styled(
+                palette.background.strong.color,
+                palette.background.weak,
+                palette.background.base.text,
+                palette.background.strong,
+                is_checked,
+            ),
         ),
         Status::Disabled { is_checked } => styled(
             palette.background.weak.color,
@@ -642,6 +756,16 @@ pub fn success(theme: &Theme, status: Status) -> Style {
             palette.success.strong,
             is_checked,
         ),
+        Status::Focused { is_checked } => focus_ring(
+            theme,
+            styled(
+                palette.background.strong.color,
+                palette.background.weak,
+                palette.success.base.text,
+                palette.success.strong,
+                is_checked,
+            ),
+        ),
         Status::Disabled { is_checked } => styled(
             palette.background.weak.color,
             palette.background.weak,
@@ -671,6 +795,16 @@ pub fn danger(theme: &Theme, status: Status) -> Style {
             palette.danger.strong,
             is_checked,
         ),
+        Status::Focused { is_checked } => focus_ring(
+            theme,
+            styled(
+                palette.background.strong.color,
+                palette.background.weak,
+                palette.danger.base.text,
+                palette.danger.strong,
+                is_checked,
+            ),
+        ),
         Status::Disabled { is_checked } => styled(
             palette.background.weak.color,
             palette.background.weak,
@@ -678,6 +812,23 @@ pub fn danger(theme: &Theme, status: Status) -> Style {
             palette.danger.weak,
             is_checked,
         ),
+    }
+}
+
+/// Draws the focus ring of the built-in [`Theme`] on a check box [`Style`]:
+/// a border of two pixels in the color of the text of the page.
+///
+/// Custom styles can call this for [`Status::Focused`].
+pub fn focus_ring(theme: &Theme, style: Style) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        border: Border {
+            color: palette.background.base.text,
+            width: 2.0,
+            radius: style.border.radius,
+        },
+        ..style
     }
 }
 

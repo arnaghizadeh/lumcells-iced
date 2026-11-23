@@ -161,6 +161,7 @@ where
             _renderer: PhantomData,
         },
         settings: Settings::default(),
+        shell: crate::runtime::shell::Settings::default(),
         window: window::Settings::default(),
         presets: Vec::new(),
     }
@@ -177,6 +178,7 @@ where
 pub struct Application<P: Program> {
     raw: P,
     settings: Settings,
+    shell: crate::runtime::shell::Settings,
     window: window::Settings,
     presets: Vec<Preset<P::State, P::Message>>,
 }
@@ -212,6 +214,15 @@ impl<P: Program> Application<P> {
         let program = self;
 
         Ok(shell::run(program)?)
+    }
+
+    /// Sets whether Tab and Shift+Tab move the keyboard focus between the
+    /// focusable widgets when no widget captured the key.
+    ///
+    /// By default, they do.
+    pub fn tab_focus(mut self, tab_focus: bool) -> Self {
+        self.shell.tab_focus = tab_focus;
+        self
     }
 
     /// Sets the [`Settings`] that will be used to run the [`Application`].
@@ -354,6 +365,7 @@ impl<P: Program> Application<P> {
                 title.title(state)
             }),
             settings: self.settings,
+            shell: self.shell,
             window: self.window,
             presets: self.presets,
         }
@@ -369,6 +381,7 @@ impl<P: Program> Application<P> {
         Application {
             raw: program::with_subscription(self.raw, f),
             settings: self.settings,
+            shell: self.shell,
             window: self.window,
             presets: self.presets,
         }
@@ -386,6 +399,7 @@ impl<P: Program> Application<P> {
                 f.theme(state)
             }),
             settings: self.settings,
+            shell: self.shell,
             window: self.window,
             presets: self.presets,
         }
@@ -401,6 +415,7 @@ impl<P: Program> Application<P> {
         Application {
             raw: program::with_style(self.raw, f),
             settings: self.settings,
+            shell: self.shell,
             window: self.window,
             presets: self.presets,
         }
@@ -418,6 +433,7 @@ impl<P: Program> Application<P> {
                 f(state)
             }),
             settings: self.settings,
+            shell: self.shell,
             window: self.window,
             presets: self.presets,
         }
@@ -435,6 +451,7 @@ impl<P: Program> Application<P> {
         Application {
             raw: program::with_executor::<P, E>(self.raw),
             settings: self.settings,
+            shell: self.shell,
             window: self.window,
             presets: self.presets,
         }
@@ -469,6 +486,10 @@ impl<P: Program> Program for Application<P> {
 
     fn settings(&self) -> Settings {
         self.settings.clone()
+    }
+
+    fn shell(&self) -> crate::runtime::shell::Settings {
+        self.shell.clone()
     }
 
     fn window(&self) -> Option<window::Settings> {

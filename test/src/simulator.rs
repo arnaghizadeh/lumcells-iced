@@ -11,6 +11,7 @@ use crate::core::window;
 use crate::core::{Element, Event, Font, Point, Settings, Size, SmolStr};
 use crate::renderer;
 use crate::runtime::UserInterface;
+use crate::runtime::focus;
 use crate::runtime::user_interface;
 use crate::selector::Bounded;
 use crate::{Error, Selector};
@@ -184,7 +185,7 @@ where
     ) -> Vec<event::Status> {
         let events: Vec<Event> = events.into_iter().collect();
 
-        let (_state, statuses) = self.raw.update(
+        let (_state, mut statuses) = self.raw.update(
             &events,
             self.cursor,
             &mut self.renderer,
@@ -192,7 +193,51 @@ where
             &mut self.messages,
         );
 
+        // Like a shell does: Tab and Shift+Tab move the keyboard focus when
+        // no widget captured the key
+        for (event, status) in events.iter().zip(statuses.iter_mut()) {
+            if *status == event::Status::Ignored
+                && let Some(direction) = focus::direction(event)
+                && focus::shift(&mut self.raw, &self.renderer, direction)
+            {
+                *status = event::Status::Captured;
+            }
+        }
+
         statuses
+    }
+
+    /// Runs the given widget [`Operation`](widget::Operation) in the
+    /// [`Simulator`] (and the ones it chains) and returns its output, if any.
+    ///
+    /// For instance, `operation::focusable::find_focused()` tells which
+    /// widget has the keyboard focus.
+    pub fn operate<T>(
+        &mut self,
+        operation: impl widget::Operation<T> + 'static,
+    ) -> Option<T>
+    where
+        T: Send + 'static,
+    {
+        use widget::Operation;
+        use widget::operation::Outcome;
+
+        let mut current: Box<dyn Operation<T>> = Box::new(operation);
+
+        loop {
+            self.raw.operate(
+                &self.renderer,
+                &mut widget::operation::black_box(current.as_mut()),
+            );
+
+            match current.finish() {
+                Outcome::None => return None,
+                Outcome::Some(output) => return Some(output),
+                Outcome::Chain(next) => {
+                    current = next;
+                }
+            }
+        }
     }
 
     /// Draws and takes a [`Snapshot`] of the interface in the [`Simulator`].

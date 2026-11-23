@@ -32,12 +32,14 @@
 //! ```
 use crate::core::alignment;
 use crate::core::border;
+use crate::core::keyboard;
 use crate::core::layout;
 use crate::core::mouse;
 use crate::core::renderer;
 use crate::core::text;
 use crate::core::touch;
 use crate::core::widget;
+use crate::core::widget::operation;
 use crate::core::widget::tree::{self, Tree};
 use crate::core::window;
 use crate::core::{
@@ -100,6 +102,7 @@ pub struct Toggler<
     font: Option<Renderer::Font>,
     class: Theme::Class<'a>,
     last_status: Option<Status>,
+    id: Option<widget::Id>,
 }
 
 impl<'a, Message, Theme, Renderer> Toggler<'a, Message, Theme, Renderer>
@@ -134,7 +137,17 @@ where
             font: None,
             class: Theme::default(),
             last_status: None,
+            id: None,
         }
+    }
+
+    /// Sets the [`widget::Id`] of the [`Toggler`].
+    ///
+    /// The identifier can be used to focus it with
+    /// [`operation::focus`](crate::core::widget::operation::focusable::focus).
+    pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     /// Sets the label of the [`Toggler`].
@@ -248,6 +261,35 @@ where
     }
 }
 
+/// The state of a [`Toggler`]: its label and whether it has the keyboard focus.
+struct State<P: text::Paragraph> {
+    is_focused: bool,
+    text: widget::text::State<P>,
+}
+
+impl<P: text::Paragraph> Default for State<P> {
+    fn default() -> Self {
+        Self {
+            is_focused: false,
+            text: widget::text::State::default(),
+        }
+    }
+}
+
+impl<P: text::Paragraph> operation::Focusable for State<P> {
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+
+    fn focus(&mut self) {
+        self.is_focused = true;
+    }
+
+    fn unfocus(&mut self) {
+        self.is_focused = false;
+    }
+}
+
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Toggler<'_, Message, Theme, Renderer>
 where
@@ -255,11 +297,11 @@ where
     Renderer: text::Renderer,
 {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<widget::text::State<Renderer::Paragraph>>()
+        tree::Tag::of::<State<Renderer::Paragraph>>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(widget::text::State::<Renderer::Paragraph>::default())
+        tree::State::new(State::<Renderer::Paragraph>::default())
     }
 
     fn size(&self) -> Size<Length> {
@@ -287,12 +329,11 @@ where
             |_| layout::Node::new(Size::new(2.0 * self.size, self.size)),
             |limits| {
                 if let Some(label) = self.label.as_deref() {
-                    let state = tree
-                        .state
-                        .downcast_mut::<widget::text::State<Renderer::Paragraph>>();
+                    let state =
+                        tree.state.downcast_mut::<State<Renderer::Paragraph>>();
 
                     widget::text::layout(
-                        state,
+                        &mut state.text,
                         renderer,
                         limits,
                         label,
@@ -317,7 +358,7 @@ where
 
     fn update(
         &mut self,
-        _tree: &mut Tree,
+        tree: &mut Tree,
         event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
@@ -330,6 +371,19 @@ where
             return;
         };
 
+        // A click elsewhere takes the keyboard focus away, whoever
+        // captured it
+        if let Event::Mouse(mouse::Event::ButtonPressed(_))
+        | Event::Touch(touch::Event::FingerPressed { .. }) = event
+        {
+            let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
+
+            if state.is_focused && !cursor.is_over(layout.bounds()) {
+                state.is_focused = false;
+                shell.request_redraw();
+            }
+        }
+
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
@@ -340,11 +394,36 @@ where
                     shell.capture_event();
                 }
             }
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key:
+                    keyboard::Key::Named(
+                        keyboard::key::Named::Enter
+                        | keyboard::key::Named::Space,
+                    ),
+                repeat: false,
+                ..
+            }) => {
+                let state =
+                    tree.state.downcast_ref::<State<Renderer::Paragraph>>();
+
+                if state.is_focused && !shell.is_event_captured() {
+                    shell.publish(on_toggle(!self.is_toggled));
+                    shell.capture_event();
+                }
+            }
             _ => {}
         }
 
         let current_status = if self.on_toggle.is_none() {
             Status::Disabled {
+                is_toggled: self.is_toggled,
+            }
+        } else if tree
+            .state
+            .downcast_ref::<State<Renderer::Paragraph>>()
+            .is_focused
+        {
+            Status::Focused {
                 is_toggled: self.is_toggled,
             }
         } else if cursor.is_over(layout.bounds()) {
@@ -408,14 +487,13 @@ where
 
         if self.label.is_some() {
             let label_layout = children.next().unwrap();
-            let state: &widget::text::State<Renderer::Paragraph> =
-                tree.state.downcast_ref();
+            let state: &State<Renderer::Paragraph> = tree.state.downcast_ref();
 
             crate::text::draw(
                 renderer,
                 defaults,
                 label_layout.bounds(),
-                state.raw(),
+                state.text.raw(),
                 crate::text::Style {
                     color: style.text_color,
                 },
@@ -467,6 +545,27 @@ where
             style.foreground,
         );
     }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
+
+        if self.on_toggle.is_some() {
+            operation.focusable(self.id.as_ref(), layout.bounds(), state);
+        } else {
+            // A disabled toggler gives up its focus
+            state.is_focused = false;
+        }
+
+        if let Some(label) = self.label.as_deref() {
+            operation.text(None, layout.bounds(), label);
+        }
+    }
 }
 
 impl<'a, Message, Theme, Renderer> From<Toggler<'a, Message, Theme, Renderer>>
@@ -498,6 +597,14 @@ pub enum Status {
     },
     /// The [`Toggler`] is disabled.
     Disabled {
+        /// Indicates whether the [`Toggler`] is toggled.
+        is_toggled: bool,
+    },
+    /// The [`Toggler`] has the keyboard focus: Space and Enter toggle it.
+    ///
+    /// A style is expected to draw a focus ring, with the border of the
+    /// background for example.
+    Focused {
         /// Indicates whether the [`Toggler`] is toggled.
         is_toggled: bool,
     },
@@ -562,7 +669,9 @@ pub fn default(theme: &Theme, status: Status) -> Style {
     let palette = theme.extended_palette();
 
     let background = match status {
-        Status::Active { is_toggled } | Status::Hovered { is_toggled } => {
+        Status::Active { is_toggled }
+        | Status::Hovered { is_toggled }
+        | Status::Focused { is_toggled } => {
             if is_toggled {
                 palette.primary.base.color
             } else {
@@ -579,7 +688,7 @@ pub fn default(theme: &Theme, status: Status) -> Style {
     };
 
     let foreground = match status {
-        Status::Active { is_toggled } => {
+        Status::Active { is_toggled } | Status::Focused { is_toggled } => {
             if is_toggled {
                 palette.primary.base.text
             } else {
@@ -599,13 +708,22 @@ pub fn default(theme: &Theme, status: Status) -> Style {
         Status::Disabled { .. } => palette.background.weakest.color,
     };
 
+    // The focus ring: a border of two pixels in the color of the text of the
+    // page
+    let (background_border_width, background_border_color) =
+        if let Status::Focused { .. } = status {
+            (2.0, palette.background.base.text)
+        } else {
+            (0.0, Color::TRANSPARENT)
+        };
+
     Style {
         background: background.into(),
         foreground: foreground.into(),
         foreground_border_width: 0.0,
         foreground_border_color: Color::TRANSPARENT,
-        background_border_width: 0.0,
-        background_border_color: Color::TRANSPARENT,
+        background_border_width,
+        background_border_color,
         text_color: None,
         border_radius: None,
         padding_ratio: 0.1,

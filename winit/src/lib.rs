@@ -74,6 +74,7 @@ where
 
     let boot_span = debug::boot();
     let settings = program.settings();
+    let shell_settings = program.shell();
     let window_settings = program.window();
 
     let event_loop = EventLoop::with_user_event()
@@ -135,6 +136,7 @@ where
         control_sender,
         display_handle,
         is_daemon,
+        shell_settings,
         graphics_settings,
         settings.fonts,
         system_theme_receiver,
@@ -500,6 +502,7 @@ async fn run_instance<P>(
     mut control_sender: mpsc::UnboundedSender<Control>,
     display_handle: winit::event_loop::OwnedDisplayHandle,
     is_daemon: bool,
+    shell_settings: runtime::shell::Settings,
     graphics_settings: graphics::Settings,
     default_fonts: Vec<Cow<'static, [u8]>>,
     mut _system_theme: oneshot::Receiver<theme::Mode>,
@@ -1186,10 +1189,28 @@ async fn run_instance<P>(
                                 }
                             }
 
-                            for (event, status) in window_events
+                            for (event, mut status) in window_events
                                 .into_iter()
                                 .zip(statuses.into_iter())
                             {
+                                // Tab and Shift+Tab move the keyboard focus
+                                // when no widget wanted the key
+                                if shell_settings.tab_focus
+                                    && status == core::event::Status::Ignored
+                                    && let Some(direction) =
+                                        runtime::focus::direction(&event)
+                                    && let Some(ui) =
+                                        user_interfaces.get_mut(&id)
+                                    && runtime::focus::shift(
+                                        ui,
+                                        &window.renderer,
+                                        direction,
+                                    )
+                                {
+                                    status = core::event::Status::Captured;
+                                    window.raw.request_redraw();
+                                }
+
                                 runtime.broadcast(
                                     subscription::Event::Interaction {
                                         window: id,

@@ -60,6 +60,10 @@ where
         self.program.settings()
     }
 
+    fn shell(&self) -> iced_program::runtime::shell::Settings {
+        self.program.shell()
+    }
+
     fn window(&self) -> Option<window::Settings> {
         self.program.window()
     }

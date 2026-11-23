@@ -17,13 +17,15 @@
 //! }
 //! ```
 use crate::core::border::{self, Border};
+use crate::core::keyboard;
 use crate::core::layout;
 use crate::core::mouse;
 use crate::core::overlay;
 use crate::core::renderer;
 use crate::core::theme::palette;
 use crate::core::touch;
-use crate::core::widget::Operation;
+use crate::core::widget;
+use crate::core::widget::operation::{self, Operation};
 use crate::core::widget::tree::{self, Tree};
 use crate::core::window;
 use crate::core::{
@@ -81,6 +83,7 @@ where
     clip: bool,
     class: Theme::Class<'a>,
     status: Option<Status>,
+    id: Option<widget::Id>,
 }
 
 enum OnPress<'a, Message> {
@@ -118,7 +121,17 @@ where
             clip: false,
             class: Theme::default(),
             status: None,
+            id: None,
         }
+    }
+
+    /// Sets the [`widget::Id`] of the [`Button`].
+    ///
+    /// The identifier can be used to focus the [`Button`] with
+    /// [`operation::focus`](crate::core::widget::operation::focusable::focus).
+    pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     /// Sets the width of the [`Button`].
@@ -201,6 +214,21 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct State {
     is_pressed: bool,
+    is_focused: bool,
+}
+
+impl operation::Focusable for State {
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+
+    fn focus(&mut self) {
+        self.is_focused = true;
+    }
+
+    fn unfocus(&mut self) {
+        self.is_focused = false;
+    }
 }
 
 impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
@@ -261,7 +289,16 @@ where
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        operation.container(None, layout.bounds());
+        if self.on_press.is_some() {
+            let state = tree.state.downcast_mut::<State>();
+
+            operation.focusable(self.id.as_ref(), layout.bounds(), state);
+        } else {
+            // A disabled button gives up its focus
+            tree.state.downcast_mut::<State>().is_focused = false;
+        }
+
+        operation.container(self.id.as_ref(), layout.bounds());
         operation.traverse(&mut |operation| {
             self.content.as_widget_mut().operate(
                 &mut tree.children[0],
@@ -294,6 +331,19 @@ where
             viewport,
         );
 
+        // A click elsewhere takes the keyboard focus away, whoever
+        // captured it
+        if let Event::Mouse(mouse::Event::ButtonPressed(_))
+        | Event::Touch(touch::Event::FingerPressed { .. }) = event
+        {
+            let state = tree.state.downcast_mut::<State>();
+
+            if state.is_focused && !cursor.is_over(layout.bounds()) {
+                state.is_focused = false;
+                shell.request_redraw();
+            }
+        }
+
         if shell.is_event_captured() {
             return;
         }
@@ -309,6 +359,24 @@ where
 
                         state.is_pressed = true;
 
+                        shell.capture_event();
+                    }
+                }
+            }
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key:
+                    keyboard::Key::Named(
+                        keyboard::key::Named::Enter
+                        | keyboard::key::Named::Space,
+                    ),
+                repeat: false,
+                ..
+            }) => {
+                if let Some(on_press) = &self.on_press {
+                    let state = tree.state.downcast_ref::<State>();
+
+                    if state.is_focused {
+                        shell.publish(on_press.get());
                         shell.capture_event();
                     }
                 }
@@ -339,18 +407,21 @@ where
             _ => {}
         }
 
-        let current_status = if self.on_press.is_none() {
-            Status::Disabled
-        } else if cursor.is_over(layout.bounds()) {
+        let current_status = {
             let state = tree.state.downcast_ref::<State>();
+            let is_mouse_over = cursor.is_over(layout.bounds());
 
-            if state.is_pressed {
+            if self.on_press.is_none() {
+                Status::Disabled
+            } else if is_mouse_over && state.is_pressed {
                 Status::Pressed
-            } else {
+            } else if state.is_focused {
+                Status::Focused
+            } else if is_mouse_over {
                 Status::Hovered
+            } else {
+                Status::Active
             }
-        } else {
-            Status::Active
         };
 
         if let Event::Window(window::Event::RedrawRequested(_now)) = event {
@@ -477,6 +548,10 @@ pub enum Status {
     Pressed,
     /// The [`Button`] cannot be pressed.
     Disabled,
+    /// The [`Button`] has the keyboard focus: Enter and Space press it.
+    ///
+    /// A style is expected to draw a focus ring; see [`focus_ring`].
+    Focused,
 }
 
 /// The style of a button.
@@ -605,6 +680,7 @@ pub fn primary(theme: &Theme, status: Status) -> Style {
             background: Some(Background::Color(palette.primary.strong.color)),
             ..base
         },
+        Status::Focused => focus_ring(theme, base),
         Status::Disabled => disabled(base),
     }
 }
@@ -620,6 +696,7 @@ pub fn secondary(theme: &Theme, status: Status) -> Style {
             background: Some(Background::Color(palette.secondary.strong.color)),
             ..base
         },
+        Status::Focused => focus_ring(theme, base),
         Status::Disabled => disabled(base),
     }
 }
@@ -635,6 +712,7 @@ pub fn success(theme: &Theme, status: Status) -> Style {
             background: Some(Background::Color(palette.success.strong.color)),
             ..base
         },
+        Status::Focused => focus_ring(theme, base),
         Status::Disabled => disabled(base),
     }
 }
@@ -650,6 +728,7 @@ pub fn warning(theme: &Theme, status: Status) -> Style {
             background: Some(Background::Color(palette.warning.strong.color)),
             ..base
         },
+        Status::Focused => focus_ring(theme, base),
         Status::Disabled => disabled(base),
     }
 }
@@ -665,6 +744,7 @@ pub fn danger(theme: &Theme, status: Status) -> Style {
             background: Some(Background::Color(palette.danger.strong.color)),
             ..base
         },
+        Status::Focused => focus_ring(theme, base),
         Status::Disabled => disabled(base),
     }
 }
@@ -684,6 +764,7 @@ pub fn text(theme: &Theme, status: Status) -> Style {
             text_color: palette.background.base.text.scale_alpha(0.8),
             ..base
         },
+        Status::Focused => focus_ring(theme, base),
         Status::Disabled => disabled(base),
     }
 }
@@ -705,6 +786,7 @@ pub fn background(theme: &Theme, status: Status) -> Style {
             background: Some(Background::Color(palette.background.weak.color)),
             ..base
         },
+        Status::Focused => focus_ring(theme, base),
         Status::Disabled => disabled(base),
     }
 }
@@ -728,7 +810,26 @@ pub fn subtle(theme: &Theme, status: Status) -> Style {
             )),
             ..base
         },
+        Status::Focused => focus_ring(theme, base),
         Status::Disabled => disabled(base),
+    }
+}
+
+/// Draws the focus ring of the built-in [`Theme`] on a button [`Style`]:
+/// a border of two pixels in the color of the text of the page, which is
+/// told apart from the page and from any of the button colors.
+///
+/// Custom styles can call this for [`Status::Focused`].
+pub fn focus_ring(theme: &Theme, style: Style) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        border: Border {
+            color: palette.background.base.text,
+            width: 2.0,
+            radius: style.border.radius,
+        },
+        ..style
     }
 }
 

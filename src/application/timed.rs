@@ -150,6 +150,7 @@ where
             _renderer: PhantomData,
         },
         settings: Settings::default(),
+        shell: crate::runtime::shell::Settings::default(),
         window: window::Settings::default(),
         presets: Vec::new(),
     }
