@@ -782,6 +782,8 @@ where
 
                 state.wheel = moved - whole;
 
+                // At either end the wheel is the page's: a terminal inside
+                // something that scrolls does not hold the pointer
                 if whole != 0.0 {
                     let before = state.scroll;
 
@@ -789,10 +791,11 @@ where
 
                     if state.scroll != before {
                         shell.request_redraw();
+                        shell.capture_event();
                     }
+                } else {
+                    shell.capture_event();
                 }
-
-                shell.capture_event();
             }
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key,
