@@ -646,7 +646,7 @@ pub mod tray {
 
 pub mod system {
     //! Retrieve system information.
-    pub use crate::runtime::system::{theme, theme_changes};
+    pub use crate::runtime::system::{quit_requests, theme, theme_changes};
 
     #[cfg(feature = "sysinfo")]
     pub use crate::runtime::system::{Information, information};

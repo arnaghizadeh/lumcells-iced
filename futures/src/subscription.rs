@@ -32,6 +32,10 @@ pub enum Event {
 
     /// The system theme has changed.
     SystemThemeChanged(theme::Mode),
+
+    /// The person asked the program to quit in the way of the platform
+    /// (macOS: "Quit" in the menu of the application, Command-Q).
+    QuitRequested,
 }
 
 /// A stream of runtime events.

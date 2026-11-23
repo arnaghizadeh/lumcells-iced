@@ -9,6 +9,15 @@ pub fn main() -> iced::Result {
         .title("Tray")
         .subscription(Counter::subscription)
         .tray(Counter::default().tray())
+        // macOS: a program of the menu bar. No Dock icon while it has no
+        // window, in the Dock while it has one, and it does not take the
+        // keyboard from the person when it starts with its icon only
+        .activation_policy(window::ActivationPolicy::Accessory)
+        .dock_follows_windows(true)
+        .activate_at_start(false)
+        // macOS: "Quit" of the menu (Command-Q) is the program's own quit
+        // (Command-W closes the window by itself)
+        .exit_on_quit_request(false)
         .run()
 }
 
@@ -26,6 +35,7 @@ enum Message {
     TogglePause,
     Opened,
     Closed(window::Id),
+    QuitRequested,
 }
 
 impl Counter {
@@ -94,6 +104,8 @@ impl Counter {
                 _ => Task::none(),
             },
             Message::Tray(tray::Event::Click) => self.open(),
+            // Here a program finishes what it is doing; then it ends
+            Message::QuitRequested => iced::exit(),
             Message::Opened => Task::none(),
             Message::Closed(id) => {
                 if self.window == Some(id) {
@@ -131,6 +143,7 @@ impl Counter {
             ticks,
             tray::events().map(Message::Tray),
             window::close_events().map(Message::Closed),
+            iced::system::quit_requests().map(|()| Message::QuitRequested),
         ])
     }
 }

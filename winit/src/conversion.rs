@@ -34,11 +34,27 @@ pub fn window_attributes(
         buttons |= winit::window::WindowButtons::MINIMIZE;
     }
 
+    // A window that is put in the middle of a monitor is no larger than
+    // the monitor: on a small screen, or a screen with a large scale, the
+    // size a program asks for may not fit
+    let size = match (&settings.position, primary_monitor.as_ref()) {
+        (window::Position::Centered, Some(monitor)) => {
+            let resolution = monitor.size();
+
+            fitted(
+                (resolution.width, resolution.height),
+                monitor.scale_factor(),
+                settings.size,
+            )
+        }
+        _ => settings.size,
+    };
+
     attributes = attributes
         .with_title(title)
         .with_inner_size(winit::dpi::LogicalSize {
-            width: settings.size.width * scale_factor,
-            height: settings.size.height * scale_factor,
+            width: size.width * scale_factor,
+            height: size.height * scale_factor,
         })
         .with_maximized(settings.maximized)
         .with_fullscreen(
@@ -56,7 +72,7 @@ pub fn window_attributes(
         .with_visible(settings.visible);
 
     if let Some(position) =
-        position(primary_monitor.as_ref(), settings.size, settings.position)
+        position(primary_monitor.as_ref(), size, settings.position)
     {
         attributes = attributes.with_position(position);
     }
@@ -417,28 +433,77 @@ pub fn position(
         window::Position::Centered => {
             if let Some(monitor) = monitor {
                 let start = monitor.position();
+                let resolution = monitor.size();
 
-                let resolution: winit::dpi::LogicalSize<f64> =
-                    monitor.size().to_logical(monitor.scale_factor());
-
-                let centered: winit::dpi::PhysicalPosition<i32> =
-                    winit::dpi::LogicalPosition {
-                        x: (resolution.width - f64::from(size.width)) / 2.0,
-                        y: (resolution.height - f64::from(size.height)) / 2.0,
-                    }
-                    .to_physical(monitor.scale_factor());
+                let (x, y) = centered(
+                    (start.x, start.y),
+                    (resolution.width, resolution.height),
+                    monitor.scale_factor(),
+                    size,
+                );
 
                 Some(winit::dpi::Position::Physical(
-                    winit::dpi::PhysicalPosition {
-                        x: start.x + centered.x,
-                        y: start.y + centered.y,
-                    },
+                    winit::dpi::PhysicalPosition { x, y },
                 ))
             } else {
                 None
             }
         }
     }
+}
+
+/// Where the top left corner of a window of the given size (in logical
+/// pixels) is put so that the window is in the middle of a monitor, in
+/// physical pixels: given where the monitor begins, its size in physical
+/// pixels and its scale factor.
+///
+/// A window that is larger than the monitor begins at the corner of the
+/// monitor, never above or left of it: its title bar and its first
+/// controls can be reached. (In the middle it would begin outside: a
+/// window of 980 x 680 on a screen of 1366 x 768 at 125 %, which is 1093
+/// x 614 logical pixels, would have its title bar 41 pixels above the
+/// screen.)
+pub fn centered(
+    monitor_position: (i32, i32),
+    monitor_size: (u32, u32),
+    scale_factor: f64,
+    size: Size,
+) -> (i32, i32) {
+    let scale_factor = if scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+
+    let along = |start: i32, monitor: u32, window: f32| {
+        let window = f64::from(window) * scale_factor;
+        let free = f64::from(monitor) - window;
+
+        start + (free / 2.0).max(0.0).round() as i32
+    };
+
+    (
+        along(monitor_position.0, monitor_size.0, size.width),
+        along(monitor_position.1, monitor_size.1, size.height),
+    )
+}
+
+/// The size of a window (in logical pixels) that is asked to be of the
+/// given size on a monitor of the given size in physical pixels and scale
+/// factor: no larger than the monitor.
+pub fn fitted(monitor_size: (u32, u32), scale_factor: f64, size: Size) -> Size {
+    let scale_factor = if scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+
+    Size::new(
+        size.width
+            .min((f64::from(monitor_size.0) / scale_factor) as f32),
+        size.height
+            .min((f64::from(monitor_size.1) / scale_factor) as f32),
+    )
 }
 
 /// Converts a [`window::Mode`] into a [`winit`] fullscreen mode.
@@ -1263,4 +1328,74 @@ pub fn ime_purpose(
 // See: https://en.wikipedia.org/wiki/Private_Use_Areas
 fn is_private_use(c: char) -> bool {
     ('\u{E000}'..='\u{F8FF}').contains(&c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The window of an application: 980 x 680 logical pixels.
+    const WINDOW: Size = Size::new(980.0, 680.0);
+
+    #[test]
+    fn a_window_is_centered_in_physical_pixels_at_any_scale() {
+        // 1920 x 1080 at 100 %
+        assert_eq!(centered((0, 0), (1920, 1080), 1.0, WINDOW), (470, 200));
+
+        // The same screen at 125 %: the window is 1225 x 850 pixels
+        assert_eq!(centered((0, 0), (1920, 1080), 1.25, WINDOW), (348, 115));
+
+        // 2560 x 1664 at 200 % (a MacBook Air): 1960 x 1360 pixels
+        assert_eq!(centered((0, 0), (2560, 1664), 2.0, WINDOW), (300, 152));
+
+        // A second monitor to the right of the first, and one above it
+        assert_eq!(
+            centered((1920, 0), (1920, 1080), 1.0, WINDOW),
+            (1920 + 470, 200)
+        );
+        assert_eq!(
+            centered((0, -1080), (1920, 1080), 1.0, WINDOW),
+            (470, -1080 + 200)
+        );
+    }
+
+    #[test]
+    fn a_window_larger_than_the_monitor_begins_at_its_corner() {
+        // 1366 x 768 at 125 % is 1093 x 614 logical pixels: the window is
+        // 66 logical pixels too high. In the middle its title bar would be
+        // 41 pixels above the screen
+        let (x, y) = centered((0, 0), (1366, 768), 1.25, WINDOW);
+        assert_eq!((x, y), (71, 0));
+
+        // 1280 x 720 at 150 %: too wide and too high
+        assert_eq!(centered((0, 0), (1280, 720), 1.5, WINDOW), (0, 0));
+
+        // On a second monitor it begins at that monitor
+        assert_eq!(
+            centered((1920, 200), (1280, 720), 1.5, WINDOW),
+            (1920, 200)
+        );
+    }
+
+    #[test]
+    fn a_centered_window_is_no_larger_than_the_monitor() {
+        assert_eq!(fitted((1920, 1080), 1.25, WINDOW), WINDOW);
+
+        let small = fitted((1366, 768), 1.25, WINDOW);
+        assert_eq!(small.width, 980.0);
+        assert!((small.height - 614.4).abs() < 0.01, "{small:?}");
+
+        let smaller = fitted((1280, 720), 1.5, WINDOW);
+        assert!((smaller.width - 853.33).abs() < 0.01, "{smaller:?}");
+        assert_eq!(smaller.height, 480.0);
+
+        // What fits is centered with room on both sides, or with none
+        assert_eq!(centered((0, 0), (1366, 768), 1.25, small), (71, 0));
+    }
+
+    #[test]
+    fn a_monitor_that_tells_no_scale_counts_as_one() {
+        assert_eq!(centered((0, 0), (1920, 1080), 0.0, WINDOW), (470, 200));
+        assert_eq!(fitted((1920, 1080), 0.0, WINDOW), WINDOW);
+    }
 }

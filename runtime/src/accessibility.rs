@@ -372,9 +372,9 @@ impl Operation for Collector {
                     .unwrap_or(Vector::ZERO);
 
                 self.parents.push(parent);
-                self.offset = self.offset + scrolled;
+                self.offset += scrolled;
                 operate(self);
-                self.offset = self.offset - scrolled;
+                self.offset -= scrolled;
                 let _ = self.parents.pop();
             }
             None => operate(self),

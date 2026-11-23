@@ -30,6 +30,7 @@ pub use winit;
 pub mod accessibility;
 pub mod clipboard;
 pub mod conversion;
+pub mod look;
 pub mod single_instance;
 pub mod tray;
 
@@ -97,11 +98,20 @@ where
         let mut builder = EventLoop::with_user_event();
 
         #[cfg(target_os = "macos")]
-        if let Some(policy) = shell_settings.activation_policy {
+        {
             use winit::platform::macos::EventLoopBuilderExtMacOS;
 
-            let _ = builder
-                .with_activation_policy(platform::activation_policy(policy));
+            if let Some(policy) = shell_settings.activation_policy {
+                let _ = builder.with_activation_policy(
+                    platform::activation_policy(policy),
+                );
+            }
+
+            // A program that starts without a window does not take the
+            // keyboard from what the person is typing in
+            if !shell_settings.activate_at_start {
+                let _ = builder.with_activate_ignoring_other_apps(false);
+            }
         }
 
         builder.build().expect("Create event loop")
@@ -154,6 +164,39 @@ where
     let (control_sender, control_receiver) = mpsc::unbounded();
     let (system_theme_sender, system_theme_receiver) = oneshot::channel();
 
+    // What only the platform tells, asked for once the event loop runs
+    let on_start: Box<dyn FnOnce()> = {
+        let watch_system_look = shell_settings.watch_system_look;
+        let platform_keys = shell_settings.platform_keys;
+        let proxy = proxy.clone();
+
+        Box::new(move || {
+            if watch_system_look {
+                let proxy = proxy.clone();
+
+                look::watch(move |mode| {
+                    proxy.send_action(Action::System(
+                        runtime::system::Action::NotifyTheme(mode),
+                    ));
+                });
+            }
+
+            #[cfg(target_os = "macos")]
+            if platform_keys {
+                let proxy = proxy.clone();
+
+                let _ = platform::take_over_quit(move || {
+                    proxy.send_action(Action::System(
+                        runtime::system::Action::RequestQuit,
+                    ));
+                });
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            let _ = platform_keys;
+        })
+    };
+
     let instance = Box::pin(run_instance::<P>(
         program,
         runtime,
@@ -179,6 +222,9 @@ where
         error: Option<Error>,
         system_theme: Option<oneshot::Sender<theme::Mode>>,
 
+        /// What is done once, when the event loop runs.
+        on_start: Option<Box<dyn FnOnce()>>,
+
         /// Makes the event loop turn and redraw; given to the
         /// accessibility of each window.
         #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -196,6 +242,7 @@ where
         receiver: control_receiver,
         error: None,
         system_theme: Some(system_theme_sender),
+        on_start: Some(on_start),
 
         #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
         wake: {
@@ -227,6 +274,10 @@ where
                         .map(conversion::theme_mode)
                         .unwrap_or_default(),
                 );
+            }
+
+            if let Some(on_start) = self.on_start.take() {
+                on_start();
             }
         }
 
@@ -659,7 +710,24 @@ async fn run_instance<P>(
         });
     }
 
+    // macOS: in the Dock only while there is a window
+    #[cfg(target_os = "macos")]
+    let mut has_windows = false;
+
     'next_event: loop {
+        #[cfg(target_os = "macos")]
+        if shell_settings.dock_follows_windows
+            && has_windows == window_manager.is_empty()
+        {
+            has_windows = !window_manager.is_empty();
+
+            platform::set_activation_policy(
+                runtime::shell::ActivationPolicy::for_windows(usize::from(
+                    has_windows,
+                )),
+            );
+        }
+
         // Empty the queue if possible
         let event = if let Ok(event) = event_receiver.try_next() {
             event
@@ -861,6 +929,18 @@ async fn run_instance<P>(
                         }
                     }
                     event::Event::UserEvent(action) => {
+                        // "Quit" of the platform: the program is told,
+                        // and ends unless it wants to end by itself
+                        if matches!(
+                            action,
+                            Action::System(system::Action::RequestQuit)
+                        ) && shell_settings.exit_on_quit_request
+                        {
+                            control_sender
+                                .start_send(Control::Exit)
+                                .expect("Send control action");
+                        }
+
                         run_action(
                             action,
                             &program,
@@ -1318,6 +1398,7 @@ async fn run_instance<P>(
                         }
 
                         let mut uis_stale = false;
+                        let mut platform_keys = Vec::new();
 
                         for (id, window) in window_manager.iter_mut() {
                             let interact_span = debug::interact(id);
@@ -1392,6 +1473,21 @@ async fn run_instance<P>(
                                     window.raw.request_redraw();
                                 }
 
+                                // The keys of the platform for windows
+                                // and the program, when no widget wanted
+                                // the key (macOS: Command-W, Command-Q)
+                                if shell_settings.platform_keys
+                                    && status == core::event::Status::Ignored
+                                    && let Some(key) =
+                                        runtime::shell::PlatformKey::of(
+                                            cfg!(target_os = "macos"),
+                                            &event,
+                                        )
+                                {
+                                    status = core::event::Status::Captured;
+                                    platform_keys.push((id, key));
+                                }
+
                                 runtime.broadcast(
                                     subscription::Event::Interaction {
                                         window: id,
@@ -1412,6 +1508,65 @@ async fn run_instance<P>(
                                     status: core::event::Status::Ignored,
                                 },
                             );
+                        }
+
+                        for (id, key) in platform_keys {
+                            use runtime::shell::PlatformKey;
+
+                            match key {
+                                // As the button of the window that closes
+                                // it: the window closes, or the program
+                                // is asked
+                                PlatformKey::CloseWindow => {
+                                    let closes = window_manager
+                                        .get_mut(id)
+                                        .is_some_and(|window| {
+                                            window.exit_on_close_request
+                                        });
+
+                                    if closes {
+                                        run_action(
+                                            Action::Window(
+                                                runtime::window::Action::Close(
+                                                    id,
+                                                ),
+                                            ),
+                                            &program,
+                                            &mut runtime,
+                                            &mut compositor,
+                                            &mut events,
+                                            &mut messages,
+                                            &mut clipboard,
+                                            &mut control_sender,
+                                            &mut user_interfaces,
+                                            &mut window_manager,
+                                            &mut ui_caches,
+                                            &mut is_window_opening,
+                                            &mut system_theme,
+                                            &mut tray,
+                                        );
+                                    } else {
+                                        runtime.broadcast(
+                                            subscription::Event::Interaction {
+                                                window: id,
+                                                event: core::Event::Window(
+                                                    core::window::Event::CloseRequested,
+                                                ),
+                                                status:
+                                                    core::event::Status::Ignored,
+                                            },
+                                        );
+                                    }
+                                }
+                                // The menu of the application has the
+                                // key; it arrives here only when there is
+                                // no such menu
+                                PlatformKey::Quit => {
+                                    proxy.send_action(Action::System(
+                                        system::Action::RequestQuit,
+                                    ));
+                                }
+                            }
                         }
 
                         if !messages.is_empty() || uis_stale {
@@ -1939,6 +2094,9 @@ fn run_action<'a, P, C>(
             }
             system::Action::GetTheme(channel) => {
                 let _ = channel.send(*system_theme);
+            }
+            system::Action::RequestQuit => {
+                runtime.broadcast(subscription::Event::QuitRequested);
             }
             system::Action::NotifyTheme(mode) => {
                 if mode != *system_theme {

@@ -188,6 +188,68 @@ impl<P: Program> Daemon<P> {
         self
     }
 
+    /// Keeps the [`Daemon`] in the Dock of macOS only while it has a
+    /// window: it becomes a regular program with its first window and an
+    /// accessory again (no Dock icon, no menu bar) when the last one is
+    /// closed. For a program that lives in the menu bar; start it with
+    /// [`activation_policy`](Self::activation_policy)`(ActivationPolicy::Accessory)`.
+    ///
+    /// macOS keeps a program that was used in "Recent applications" of
+    /// the Dock for a while, as it does for every program; that is a
+    /// setting of the Dock, not of the program.
+    pub fn dock_follows_windows(mut self, follows: bool) -> Self {
+        self.shell.dock_follows_windows = follows;
+        self
+    }
+
+    /// Sets whether the [`Daemon`] becomes the active application of macOS
+    /// when it starts. A program started without a window (at login, with
+    /// its menu bar icon only) should not: it would take the keyboard from
+    /// whatever the person is typing in.
+    ///
+    /// By default, it does.
+    pub fn activate_at_start(mut self, activate: bool) -> Self {
+        self.shell.activate_at_start = activate;
+        self
+    }
+
+    /// Sets whether the keys of the platform for windows and the program
+    /// do what they do everywhere on it, when no widget captured them: on
+    /// macOS, Command-W asks the window with the focus to close (as its
+    /// red button does) and "Quit" in the menu of the application
+    /// (Command-Q) asks the program to quit; see
+    /// [`system::quit_requests`](crate::system::quit_requests).
+    ///
+    /// By default, they do.
+    pub fn platform_keys(mut self, platform_keys: bool) -> Self {
+        self.shell.platform_keys = platform_keys;
+        self
+    }
+
+    /// Sets whether the [`Daemon`] ends when the person asks it to quit in
+    /// the way of the platform (macOS: "Quit" in the menu of the
+    /// application, Command-Q). A program that has something to finish
+    /// first says `false`, listens to
+    /// [`system::quit_requests`](crate::system::quit_requests) and calls
+    /// [`exit`](crate::exit) when it is done.
+    ///
+    /// By default, it does.
+    pub fn exit_on_quit_request(mut self, exit: bool) -> Self {
+        self.shell.exit_on_quit_request = exit;
+        self
+    }
+
+    /// Sets whether the shell itself watches the look of the system (light
+    /// or dark) on macOS and Windows, where a window is not told reliably;
+    /// what it sees comes through
+    /// [`system::theme_changes`](crate::system::theme_changes).
+    ///
+    /// By default, it does.
+    pub fn watch_system_look(mut self, watch: bool) -> Self {
+        self.shell.watch_system_look = watch;
+        self
+    }
+
     /// Sets the tray icon the [`Daemon`] starts with; see
     /// [`tray`](crate::tray).
     pub fn tray(mut self, tray: crate::tray::Settings) -> Self {

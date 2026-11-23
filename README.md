@@ -4,10 +4,22 @@ The Lumcells fork of [iced](https://github.com/iced-rs/iced) (MIT), branch `lumc
 toolkit Lumcells applications ship. It is upstream's `0.14` branch plus the patches listed under
 **Lumcells** in [CHANGELOG.md](CHANGELOG.md): keyboard focus on every control, a three-state check
 box, selectable text, a tray icon without GTK, single instance, the macOS activation policy, the
-start of an accessibility tree, a terminal widget (feature `terminal`), and a few things for
-tests. Each patch has an example (`examples/focus_ring`, `tri_state_checkbox`,
-`selectable_text`, `tray`, `single_instance`, `terminal`) and
-tests; `.github/workflows/ci.yml` runs them on Linux, Windows and macOS.
+start of an accessibility tree (with names on widgets, and following scrolling), a terminal
+widget (feature `terminal`), what a program of the menu bar needs on macOS and of the tray on
+Windows, and a few things for tests. Each patch has an example (`examples/focus_ring`,
+`tri_state_checkbox`, `selectable_text`, `tray`, `single_instance`, `terminal`,
+`accessible_names`) and tests; `.github/workflows/ci.yml` runs them on Linux, Windows and macOS.
+
+Test the workspace (`cargo test --workspace`), or the examples with
+`.github/scripts/fork-examples.sh`. A crate tested alone may fail tests that pass in the
+workspace, because it is then built without the features the others turn on: `cargo test -p
+iced_test` has no renderer and two snapshot tests get no picture, `cargo test -p iced_futures`
+misses a feature in one of upstream's doctests.
+
+What is built for macOS and Windows is checked from Linux with `cargo check --target
+aarch64-apple-darwin` and `--target x86_64-pc-windows-msvc` (the targets have to be installed;
+linking is not expected to work). What was only checked that way and never run on the system
+says so in its CHANGELOG line.
 
 Use it from an application by pointing the `iced` crates at a commit of this branch:
 

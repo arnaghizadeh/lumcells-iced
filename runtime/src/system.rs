@@ -15,6 +15,10 @@ pub enum Action {
 
     /// Notify to the runtime that the system theme has changed.
     NotifyTheme(theme::Mode),
+
+    /// Notify to the runtime that the person asked the program to quit in
+    /// the way of the platform.
+    RequestQuit,
 }
 
 /// Contains information about the system (e.g. system name, processor, memory, graphics adapter).
@@ -70,5 +74,22 @@ pub fn theme_changes() -> Subscription<theme::Mode> {
         };
 
         Some(mode)
+    })
+}
+
+/// Subscribes to the person asking the program to quit in the way of the
+/// platform: on macOS, "Quit" in the menu of the application and
+/// Command-Q. Nothing on other platforms.
+///
+/// By default the program ends when it is asked (gracefully: its event
+/// loop returns, which AppKit's own "Quit" does not let it do). A program
+/// that has something to finish first turns that off with
+/// `exit_on_quit_request(false)` and calls `iced::exit()` when it is done.
+pub fn quit_requests() -> Subscription<()> {
+    #[derive(Hash)]
+    struct QuitRequests;
+
+    subscription::filter_map(QuitRequests, |event| {
+        matches!(event, subscription::Event::QuitRequested).then_some(())
     })
 }
