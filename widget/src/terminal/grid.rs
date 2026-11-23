@@ -72,6 +72,9 @@ pub struct Cell {
     pub bg: Color,
     /// How it is drawn.
     pub flags: Flags,
+    /// The link the program put on it (`OSC 8`): 0 for none, otherwise the
+    /// number [`Grid::hyperlink`] takes.
+    pub link: u16,
 }
 
 impl Default for Cell {
@@ -81,6 +84,7 @@ impl Default for Cell {
             fg: Color::Default,
             bg: Color::Default,
             flags: Flags::default(),
+            link: 0,
         }
     }
 }
@@ -143,6 +147,56 @@ impl Row {
     }
 }
 
+/// What of the mouse the program asked to be told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseMode {
+    /// Nothing: the mouse selects and scrolls.
+    #[default]
+    None,
+    /// Presses, releases and the wheel (`ESC [ ? 1000 h`).
+    Clicks,
+    /// Those, and movement while a button is held (`ESC [ ? 1002 h`).
+    Drags,
+    /// Those, and every movement (`ESC [ ? 1003 h`).
+    Motion,
+}
+
+/// How the program asked to be told of the mouse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseEncoding {
+    /// `ESC [ M` and three bytes; a cell beyond column or line 223 cannot
+    /// be told.
+    #[default]
+    Legacy,
+    /// As [`Legacy`](Self::Legacy) with the places as UTF-8 characters
+    /// (`ESC [ ? 1005 h`), up to 2015.
+    Utf8,
+    /// `ESC [ < button ; column ; line M` (`m` for a release), in digits
+    /// (`ESC [ ? 1006 h`).
+    Sgr,
+}
+
+/// A link in the grid: an address a program wrote out, or one it put on
+/// some text (`OSC 8`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    /// Where it leads.
+    pub url: String,
+    /// Its first cell: line (as [`Grid::line`] counts) and column.
+    pub start: (usize, usize),
+    /// Its last cell.
+    pub end: (usize, usize),
+}
+
+/// The schemes of the addresses that are found in what a program wrote.
+pub const SCHEMES: [&str; 10] = [
+    "http", "https", "ftp", "ftps", "file", "ssh", "sftp", "git", "ws", "wss",
+];
+
+/// How many lines above and below a cell are looked at for the wrapped
+/// line it is a part of.
+const WRAPPED_REACH: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct Cursor {
     row: usize,
@@ -187,6 +241,11 @@ pub struct Grid {
     application_cursor: bool,
     application_keypad: bool,
     bracketed_paste: bool,
+    mouse_mode: MouseMode,
+    sgr_mouse: bool,
+    utf8_mouse: bool,
+    /// The addresses of `OSC 8`; a cell names one by its place here plus 1.
+    links: Vec<String>,
     title: Option<String>,
     answers: Vec<u8>,
     bells: u64,
@@ -223,6 +282,10 @@ impl Grid {
             application_cursor: false,
             application_keypad: false,
             bracketed_paste: false,
+            mouse_mode: MouseMode::None,
+            sgr_mouse: false,
+            utf8_mouse: false,
+            links: Vec::new(),
             title: None,
             answers: Vec::new(),
             bells: 0,
@@ -301,6 +364,206 @@ impl Grid {
     /// Whether pasted text is to be put between the paste marks.
     pub fn bracketed_paste(&self) -> bool {
         self.bracketed_paste
+    }
+
+    /// What of the mouse the program asked to be told.
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
+    /// How the program asked to be told of the mouse.
+    pub fn mouse_encoding(&self) -> MouseEncoding {
+        if self.sgr_mouse {
+            MouseEncoding::Sgr
+        } else if self.utf8_mouse {
+            MouseEncoding::Utf8
+        } else {
+            MouseEncoding::Legacy
+        }
+    }
+
+    /// The address of a link a program put on cells ([`Cell::link`]).
+    pub fn hyperlink(&self, link: u16) -> Option<&str> {
+        self.links
+            .get(usize::from(link).checked_sub(1)?)
+            .map(String::as_str)
+    }
+
+    /// The first and the last line of the wrapped line that line `index`
+    /// is a part of (no further than [`WRAPPED_REACH`] lines away).
+    fn wrapped_line(&self, index: usize) -> (usize, usize) {
+        let mut first = index;
+        let mut last = index;
+
+        while first > 0
+            && index - first < WRAPPED_REACH
+            && self.line(first - 1).is_some_and(|row| row.wrapped)
+        {
+            first -= 1;
+        }
+
+        while last - index < WRAPPED_REACH
+            && last + 1 < self.total_lines()
+            && self.line(last).is_some_and(|row| row.wrapped)
+        {
+            last += 1;
+        }
+
+        (first, last)
+    }
+
+    /// The characters of the lines `first..=last`, each with its cell.
+    fn spelled(
+        &self,
+        first: usize,
+        last: usize,
+    ) -> Vec<(char, (usize, usize))> {
+        let mut spelled = Vec::new();
+
+        for index in first..=last {
+            let Some(row) = self.line(index) else { break };
+
+            // A line that goes on in the next is full: its blanks count
+            let used = if row.wrapped && index != last {
+                row.cells.len()
+            } else {
+                row.len_used()
+            };
+
+            for (col, cell) in row.cells[..used].iter().enumerate() {
+                if !cell.flags.contains(Flags::WIDE_SPACER) {
+                    spelled.push((cell.c, (index, col)));
+                }
+            }
+        }
+
+        spelled
+    }
+
+    /// The last cell a character takes: the second half of a wide one.
+    fn last_cell_of(&self, (line, col): (usize, usize)) -> (usize, usize) {
+        let wide = self
+            .line(line)
+            .and_then(|row| row.cells.get(col))
+            .is_some_and(|cell| cell.flags.contains(Flags::WIDE));
+
+        (line, col + usize::from(wide))
+    }
+
+    /// Every place `needle` stands in the history and on the screen, from
+    /// the first line on: the first and the last cell of each (line as
+    /// [`line`](Self::line) counts, and column). A line that was wrapped is
+    /// searched as the one line it is, so what was cut by the right edge is
+    /// found. Capitals and small letters are the same unless
+    /// `case_sensitive`. Places do not overlap.
+    pub fn find(
+        &self,
+        needle: &str,
+        case_sensitive: bool,
+    ) -> Vec<((usize, usize), (usize, usize))> {
+        let fold = |c: char| {
+            if case_sensitive {
+                c
+            } else {
+                c.to_lowercase().next().unwrap_or(c)
+            }
+        };
+        let needle: Vec<char> = needle.chars().map(fold).collect();
+        let mut found = Vec::new();
+
+        if needle.is_empty() {
+            return found;
+        }
+
+        let total = self.total_lines();
+        let mut first = 0;
+
+        while first < total {
+            let mut last = first;
+
+            while last + 1 < total
+                && self.line(last).is_some_and(|row| row.wrapped)
+            {
+                last += 1;
+            }
+
+            let spelled = self.spelled(first, last);
+            let mut at = 0;
+
+            while at + needle.len() <= spelled.len() {
+                if spelled[at..at + needle.len()]
+                    .iter()
+                    .zip(&needle)
+                    .all(|((c, _), wanted)| fold(*c) == *wanted)
+                {
+                    found.push((
+                        spelled[at].1,
+                        self.last_cell_of(spelled[at + needle.len() - 1].1),
+                    ));
+                    at += needle.len();
+                } else {
+                    at += 1;
+                }
+            }
+
+            first = last + 1;
+        }
+
+        found
+    }
+
+    /// The link a cell is a part of: one the program put there (`OSC 8`),
+    /// or an address written out (one of [`SCHEMES`], `://` and what
+    /// follows up to a blank, without the full stop or the bracket that
+    /// ends the sentence around it). An address that the right edge cut is
+    /// one link over its lines.
+    pub fn link_at(&self, line: usize, col: usize) -> Option<Link> {
+        let cell = self.line(line)?.cells.get(col)?;
+        let col = if cell.flags.contains(Flags::WIDE_SPACER) && col > 0 {
+            col - 1
+        } else {
+            col
+        };
+        let (first, last) = self.wrapped_line(line);
+        let spelled = self.spelled(first, last);
+        let at = spelled
+            .iter()
+            .position(|(_, place)| *place == (line, col))?;
+
+        if cell.link != 0 {
+            let link_of = |(line, col): (usize, usize)| {
+                self.line(line).map_or(0, |row| row.cells[col].link)
+            };
+            let mut from = at;
+            let mut to = at;
+
+            while from > 0 && link_of(spelled[from - 1].1) == cell.link {
+                from -= 1;
+            }
+
+            while to + 1 < spelled.len()
+                && link_of(spelled[to + 1].1) == cell.link
+            {
+                to += 1;
+            }
+
+            return Some(Link {
+                url: self.hyperlink(cell.link)?.to_owned(),
+                start: spelled[from].1,
+                end: self.last_cell_of(spelled[to].1),
+            });
+        }
+
+        let text: Vec<char> = spelled.iter().map(|(c, _)| *c).collect();
+
+        addresses(&text)
+            .into_iter()
+            .find(|(from, to)| (*from..*to).contains(&at))
+            .map(|(from, to)| Link {
+                url: text[from..to].iter().collect(),
+                start: spelled[from].1,
+                end: self.last_cell_of(spelled[to - 1].1),
+            })
     }
 
     /// Whether the alternate screen is shown (a full screen program runs).
@@ -442,6 +705,7 @@ impl Grid {
             fg: Color::Default,
             bg: self.cursor.pen.bg,
             flags: Flags::default(),
+            link: 0,
         }
     }
 
@@ -562,6 +826,21 @@ impl Grid {
             PrivateMode::Named(NamedPrivateMode::BracketedPaste) => {
                 self.bracketed_paste = set;
             }
+            PrivateMode::Named(NamedPrivateMode::ReportMouseClicks) => {
+                self.mouse(MouseMode::Clicks, set);
+            }
+            PrivateMode::Named(NamedPrivateMode::ReportCellMouseMotion) => {
+                self.mouse(MouseMode::Drags, set);
+            }
+            PrivateMode::Named(NamedPrivateMode::ReportAllMouseMotion) => {
+                self.mouse(MouseMode::Motion, set);
+            }
+            PrivateMode::Named(NamedPrivateMode::SgrMouse) => {
+                self.sgr_mouse = set;
+            }
+            PrivateMode::Named(NamedPrivateMode::Utf8Mouse) => {
+                self.utf8_mouse = set;
+            }
             PrivateMode::Named(
                 NamedPrivateMode::SwapScreenAndSetRestoreCursor,
             ) => {
@@ -589,9 +868,19 @@ impl Grid {
                     self.cursor = self.saved;
                 }
             }
-            // The mouse, the focus, blinking, synchronized updates: nothing
-            // the grid keeps
+            // The focus, blinking, synchronized updates: nothing the grid
+            // keeps
             _ => {}
+        }
+    }
+
+    /// The last mode asked for is the one that holds; taking back the one
+    /// that holds ends the reports.
+    fn mouse(&mut self, mode: MouseMode, set: bool) {
+        if set {
+            self.mouse_mode = mode;
+        } else if self.mouse_mode == mode {
+            self.mouse_mode = MouseMode::None;
         }
     }
 
@@ -622,6 +911,24 @@ impl Grid {
 impl Handler for Grid {
     fn set_title(&mut self, title: Option<String>) {
         self.title = title;
+    }
+
+    fn set_hyperlink(&mut self, link: Option<vte::ansi::Hyperlink>) {
+        self.cursor.pen.link = match link {
+            None => 0,
+            // The same address again is the same link; more addresses than
+            // a cell can name are text without a link
+            Some(link) => {
+                match self.links.iter().rposition(|known| *known == link.uri) {
+                    Some(known) => known as u16 + 1,
+                    None if self.links.len() < usize::from(u16::MAX) => {
+                        self.links.push(link.uri);
+                        self.links.len() as u16
+                    }
+                    None => 0,
+                }
+            }
+        };
     }
 
     fn input(&mut self, c: char) {
@@ -999,12 +1306,14 @@ impl Handler for Grid {
 
     fn reset_state(&mut self) {
         let history = std::mem::take(&mut self.history);
+        let links = std::mem::take(&mut self.links);
         let (dropped, bells) = (self.dropped, self.bells);
         let answers = std::mem::take(&mut self.answers);
 
         *self =
             Grid::new(self.cols as u16, self.rows as u16, self.history_limit);
         self.history = history;
+        self.links = links;
         self.dropped = dropped;
         self.bells = bells;
         self.answers = answers;
@@ -1025,7 +1334,11 @@ impl Handler for Grid {
 
         match attr {
             Attr::Reset => {
-                *pen = Cell::default();
+                // A link is not a look: it lasts until the program ends it
+                *pen = Cell {
+                    link: pen.link,
+                    ..Cell::default()
+                };
             }
             Attr::Bold => pen.flags.insert(Flags::BOLD),
             Attr::Dim => pen.flags.insert(Flags::DIM),
@@ -1147,6 +1460,68 @@ impl Handler for Grid {
 
         self.answers.extend_from_slice(answer.as_bytes());
     }
+}
+
+/// Where addresses stand in a line: from the first character of each up to
+/// the one after its last.
+fn addresses(text: &[char]) -> Vec<(usize, usize)> {
+    let in_scheme =
+        |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-');
+    let in_address = |c: char| {
+        !c.is_whitespace()
+            && !c.is_control()
+            && !matches!(c, '<' | '>' | '"' | '{' | '}' | '|' | '\\' | '^' | '`')
+            // The lines of a frame drawn around text
+            && !('\u{2500}'..='\u{259f}').contains(&c)
+    };
+    let mut found = Vec::new();
+    let mut at = 0;
+
+    while at + 3 <= text.len() {
+        if text[at..at + 3] != [':', '/', '/'] {
+            at += 1;
+            continue;
+        }
+
+        let mut from = at;
+
+        while from > 0 && in_scheme(text[from - 1]) {
+            from -= 1;
+        }
+
+        let scheme: String = text[from..at]
+            .iter()
+            .map(char::to_ascii_lowercase)
+            .collect();
+        let mut to = at + 3;
+
+        while to < text.len() && in_address(text[to]) {
+            to += 1;
+        }
+
+        // What ends the sentence or closes the bracket around the address
+        // is not a part of it
+        while to > at + 3 {
+            let count = |wanted: char| {
+                text[from..to].iter().filter(|c| **c == wanted).count()
+            };
+
+            match text[to - 1] {
+                '.' | ',' | ';' | ':' | '!' | '?' | '\'' => to -= 1,
+                ')' if count(')') > count('(') => to -= 1,
+                ']' if count(']') > count('[') => to -= 1,
+                _ => break,
+            }
+        }
+
+        if to > at + 3 && SCHEMES.contains(&scheme.as_str()) {
+            found.push((from, to));
+        }
+
+        at = to.max(at + 3);
+    }
+
+    found
 }
 
 #[cfg(test)]
@@ -1312,6 +1687,302 @@ mod tests {
             }
         );
         assert_eq!(row.cells[4].fg, Color::Indexed(10), "bright green");
+    }
+
+    #[test]
+    fn all_256_colors_and_true_color_in_every_way_of_writing_them() {
+        // Every one of the 256, as foreground and as background
+        for index in 0..=255u8 {
+            let grid = fed(
+                4,
+                1,
+                format!("\x1b[38;5;{index}mf\x1b[0;48;5;{index}mb").as_bytes(),
+            );
+            let row = grid.line(0).unwrap();
+
+            assert_eq!(row.cells[0].fg, Color::Indexed(index));
+            assert_eq!(row.cells[0].bg, Color::Default);
+            assert_eq!(row.cells[1].bg, Color::Indexed(index));
+            assert_eq!(row.cells[1].fg, Color::Default);
+        }
+
+        // The sixteen by their own numbers: 30 to 37, 90 to 97, and the
+        // backgrounds 40 to 47, 100 to 107
+        for n in 0..8u8 {
+            let grid = fed(
+                4,
+                1,
+                format!(
+                    "\x1b[{}ma\x1b[{}mb\x1b[0;{}mc\x1b[{}md",
+                    30 + n,
+                    90 + n,
+                    40 + n,
+                    100 + n
+                )
+                .as_bytes(),
+            );
+            let row = grid.line(0).unwrap();
+
+            assert_eq!(row.cells[0].fg, Color::Indexed(n));
+            assert_eq!(row.cells[1].fg, Color::Indexed(8 + n));
+            assert_eq!(row.cells[2].bg, Color::Indexed(n));
+            assert_eq!(row.cells[3].bg, Color::Indexed(8 + n));
+        }
+
+        // True color with semicolons, and both with colons (ITU T.416): with
+        // the empty color space and without it
+        let grid = fed(
+            8,
+            1,
+            b"\x1b[38;2;255;128;0ma\x1b[48;2;1;2;3mb\x1b[0m\
+              \x1b[38:5:208mc\x1b[48:5:17md\x1b[0m\
+              \x1b[38:2::10:20:30me\x1b[48:2::40:50:60mf\x1b[0m\
+              \x1b[38:2:70:80:90mg",
+        );
+        let row = grid.line(0).unwrap();
+
+        assert_eq!(row.cells[0].fg, Color::Rgb(255, 128, 0));
+        assert_eq!(row.cells[1].bg, Color::Rgb(1, 2, 3));
+        assert_eq!(row.cells[1].fg, Color::Rgb(255, 128, 0), "it lasts");
+        assert_eq!(row.cells[2].fg, Color::Indexed(208));
+        assert_eq!(row.cells[3].bg, Color::Indexed(17));
+        assert_eq!(row.cells[4].fg, Color::Rgb(10, 20, 30));
+        assert_eq!(row.cells[5].bg, Color::Rgb(40, 50, 60));
+        assert_eq!(row.cells[6].fg, Color::Rgb(70, 80, 90));
+
+        // 39 and 49 give the colors of the terminal back
+        let grid = fed(4, 1, b"\x1b[38;2;9;9;9;48;5;9m\x1b[39;49mx");
+        assert_eq!(
+            grid.line(0).unwrap().cells[0],
+            Cell {
+                c: 'x',
+                ..Cell::default()
+            }
+        );
+
+        // A color that is cut short or out of range changes nothing and
+        // what follows it is still read
+        let grid = fed(4, 1, b"\x1b[38;5;300mx\x1b[38;2;1;2my\x1b[1mz");
+        let row = grid.line(0).unwrap();
+        assert_eq!(row.cells[0].fg, Color::Default);
+        assert_eq!(row.cells[1].fg, Color::Default);
+        assert!(row.cells[2].flags.contains(Flags::BOLD));
+    }
+
+    #[test]
+    fn the_mouse_modes_a_program_asks_for() {
+        let mut grid = Grid::new(10, 3, 0);
+
+        assert_eq!(grid.mouse_mode(), MouseMode::None);
+        assert_eq!(grid.mouse_encoding(), MouseEncoding::Legacy);
+
+        feed(&mut grid, b"\x1b[?1000h");
+        assert_eq!(grid.mouse_mode(), MouseMode::Clicks);
+        feed(&mut grid, b"\x1b[?1002h\x1b[?1006h");
+        assert_eq!(grid.mouse_mode(), MouseMode::Drags);
+        assert_eq!(grid.mouse_encoding(), MouseEncoding::Sgr);
+        feed(&mut grid, b"\x1b[?1003h");
+        assert_eq!(grid.mouse_mode(), MouseMode::Motion);
+
+        // Taking back a mode that does not hold changes nothing
+        feed(&mut grid, b"\x1b[?1000l");
+        assert_eq!(grid.mouse_mode(), MouseMode::Motion);
+        feed(&mut grid, b"\x1b[?1003l\x1b[?1006l\x1b[?1005h");
+        assert_eq!(grid.mouse_mode(), MouseMode::None);
+        assert_eq!(grid.mouse_encoding(), MouseEncoding::Utf8);
+
+        // Several at once, as vim and tmux write them
+        feed(&mut grid, b"\x1b[?1005l\x1b[?1000;1002;1006h");
+        assert_eq!(grid.mouse_mode(), MouseMode::Drags);
+        assert_eq!(grid.mouse_encoding(), MouseEncoding::Sgr);
+
+        // A reset ends it
+        feed(&mut grid, b"\x1bc");
+        assert_eq!(grid.mouse_mode(), MouseMode::None);
+        assert_eq!(grid.mouse_encoding(), MouseEncoding::Legacy);
+    }
+
+    #[test]
+    fn a_search_finds_every_place_in_the_history_and_on_the_screen() {
+        let mut grid = Grid::new(20, 3, 100);
+
+        for n in 1..=6 {
+            feed(&mut grid, format!("test {n} Error: e{n}\r\n").as_bytes());
+        }
+
+        assert_eq!(grid.history(), 4);
+
+        // Small letters find capitals too
+        let found = grid.find("error", false);
+        assert_eq!(found.len(), 6);
+        assert_eq!(found[0], ((0, 7), (0, 11)), "in the history");
+        assert_eq!(found[5], ((5, 7), (5, 11)), "on the screen");
+        assert_eq!(grid.selected(found[5].0, found[5].1), "Error");
+
+        assert_eq!(grid.find("error", true), [], "capitals count");
+        assert_eq!(grid.find("Error: e3", true), [((2, 7), (2, 15))]);
+        assert_eq!(grid.find("", false), []);
+        assert_eq!(grid.find("nowhere", false), []);
+
+        // Places do not overlap, and there can be several in a line
+        let grid = fed(10, 2, b"aaaaa aa");
+        assert_eq!(
+            grid.find("aa", false),
+            [((0, 0), (0, 1)), ((0, 2), (0, 3)), ((0, 6), (0, 7))]
+        );
+    }
+
+    #[test]
+    fn a_search_reads_a_wrapped_line_as_one_and_knows_wide_characters() {
+        // "needle" is cut by the right edge
+        let grid = fed(10, 4, b"0123456needle x\r\nneedle");
+
+        assert_eq!(screen(&grid), ["0123456nee", "dle x", "needle", ""]);
+        assert_eq!(
+            grid.find("needle", false),
+            [((0, 7), (1, 2)), ((2, 0), (2, 5))]
+        );
+
+        // Two lines that are not one line are not searched as one
+        let grid = fed(10, 3, b"0123456nee\r\ndle");
+        assert_eq!(grid.find("needle", false), []);
+
+        // The blanks at the end of a line that wrapped are a part of it
+        let grid = fed(6, 3, b"ab    cd");
+        assert_eq!(screen(&grid), ["ab", "cd", ""]);
+        assert_eq!(grid.find("b    c", false), [((0, 1), (1, 0))]);
+
+        // A wide character is found, and both its cells are the place
+        let grid = fed(10, 1, "a\u{4e16}\u{754c}b".as_bytes());
+        assert_eq!(grid.find("\u{4e16}\u{754c}", false), [((0, 1), (0, 4))]);
+        assert_eq!(grid.find("\u{754c}b", false), [((0, 3), (0, 5))]);
+    }
+
+    #[test]
+    fn an_address_that_was_written_is_a_link() {
+        let grid = fed(
+            60,
+            4,
+            b"see https://example.com/a?b=1#c, or (http://x.org/y_(z)).\r\n\
+              clone ssh://git@host:22/repo.git and file:///tmp/a.txt!\r\n\
+              not://a.link nor http:// nor https:/x nor xhttps://y",
+        );
+        let link = |line: usize, col: usize| {
+            grid.link_at(line, col).map(|link| link.url)
+        };
+
+        assert_eq!(link(0, 0), None);
+        assert_eq!(link(0, 3), None, "the blank before it");
+        assert_eq!(
+            grid.link_at(0, 4),
+            Some(Link {
+                url: "https://example.com/a?b=1#c".to_owned(),
+                start: (0, 4),
+                end: (0, 30),
+            }),
+            "without the comma"
+        );
+        assert_eq!(link(0, 30).as_deref(), Some("https://example.com/a?b=1#c"));
+        assert_eq!(link(0, 31), None, "the comma");
+        assert_eq!(
+            link(0, 45).as_deref(),
+            Some("http://x.org/y_(z)"),
+            "its own brackets are kept, the one around it is not"
+        );
+        assert_eq!(link(1, 8).as_deref(), Some("ssh://git@host:22/repo.git"));
+        assert_eq!(link(1, 40).as_deref(), Some("file:///tmp/a.txt"));
+
+        for col in 0..60 {
+            assert_eq!(link(2, col), None, "column {col}");
+        }
+
+        assert_eq!(link(3, 0), None, "an empty line");
+        assert_eq!(link(9, 0), None, "no such line");
+        assert_eq!(link(0, 99), None, "no such column");
+    }
+
+    #[test]
+    fn an_address_cut_by_the_right_edge_is_one_link() {
+        let mut grid = Grid::new(20, 3, 100);
+
+        feed(
+            &mut grid,
+            b"go to https://example.com/a/long/path/of/many/cells now",
+        );
+        assert_eq!(
+            screen(&grid),
+            [
+                "go to https://exampl",
+                "e.com/a/long/path/of",
+                "/many/cells now"
+            ]
+        );
+
+        let whole = Link {
+            url: "https://example.com/a/long/path/of/many/cells".to_owned(),
+            start: (0, 6),
+            end: (2, 10),
+        };
+
+        assert_eq!(grid.link_at(0, 10), Some(whole.clone()));
+        assert_eq!(grid.link_at(1, 0), Some(whole.clone()));
+        assert_eq!(grid.link_at(2, 10), Some(whole.clone()));
+        assert_eq!(grid.link_at(2, 11), None);
+
+        // It is the same link once its first line is history
+        feed(&mut grid, b"\r\n\r\n");
+        assert_eq!(grid.history(), 2);
+        assert_eq!(grid.link_at(1, 3), Some(whole));
+    }
+
+    #[test]
+    fn a_link_the_program_put_on_text_is_a_link() {
+        let grid = fed(
+            30,
+            2,
+            b"read \x1b]8;;https://example.com/docs\x1b\\the \x1b[1mdocs\x1b[0m\x1b]8;;\x1b\\ \
+              or \x1b]8;id=a;file:///x\x07this\x1b]8;;\x07.",
+        );
+        let row = grid.line(0).unwrap();
+
+        assert_eq!(row.text(0, 99), "read the docs or this.");
+        assert_eq!(row.cells[0].link, 0);
+        assert_ne!(row.cells[5].link, 0);
+        assert_eq!(
+            grid.hyperlink(row.cells[5].link),
+            Some("https://example.com/docs")
+        );
+        assert_eq!(
+            grid.link_at(0, 9),
+            Some(Link {
+                url: "https://example.com/docs".to_owned(),
+                start: (0, 5),
+                end: (0, 12),
+            }),
+            "a change of look does not end it"
+        );
+        assert_eq!(grid.link_at(0, 13), None, "ended by the program");
+        assert_eq!(
+            grid.link_at(0, 17).map(|link| link.url).as_deref(),
+            Some("file:///x")
+        );
+        assert_eq!(grid.link_at(0, 21), None);
+        assert_eq!(grid.hyperlink(0), None);
+        assert_eq!(grid.hyperlink(99), None);
+
+        // The same address twice is one entry
+        let grid = fed(
+            30,
+            2,
+            b"\x1b]8;;http://a\x07x\x1b]8;;\x07 \x1b]8;;http://a\x07y\x1b]8;;\x07",
+        );
+        let row = grid.line(0).unwrap();
+        assert_eq!(row.cells[0].link, row.cells[2].link);
+        assert_eq!(
+            grid.link_at(0, 0).map(|link| link.end),
+            Some((0, 0)),
+            "the blank between the two is no link"
+        );
     }
 
     #[test]

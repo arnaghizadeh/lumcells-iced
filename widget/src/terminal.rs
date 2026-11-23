@@ -52,11 +52,35 @@
 //!
 //! Ctrl+Shift+C copies the selection and Ctrl+Shift+V pastes (on macOS
 //! Cmd+C and Cmd+V); while not typing Ctrl+C copies too. Shift+Page Up and
-//! Shift+Page Down scroll at any time.
+//! Shift+Page Down scroll at any time. Ctrl+Shift+F (Cmd+F) is handed to
+//! the application when it asked for it with [`Terminal::on_search`].
+//!
+//! # Search
+//! [`Content::search`] looks for a text in everything the terminal holds;
+//! every place is marked, the terminal scrolls to the one that is current,
+//! and [`Content::search_next`] and [`Content::search_previous`] go from one
+//! to the other. The field the text is typed into is the application's.
+//!
+//! # The mouse
+//! A drag selects, a double click a word, a triple click a line; a drag
+//! past the top or the bottom scrolls for as long as the button is held
+//! there. When the program in the terminal asks to be told of the mouse
+//! (`ESC [ ? 1000 h`, `1002`, `1003`; a full screen editor does), presses,
+//! releases, drags and the wheel go to it as bytes of
+//! [`Terminal::on_input`] instead, and holding Shift gives the mouse back
+//! to the selection, as in xterm.
+//!
+//! # Links
+//! With [`Terminal::on_link`] an address a program wrote (`https://...`,
+//! see [`grid::SCHEMES`]) or put on some text (`OSC 8`) is underlined under
+//! the pointer, and Ctrl+click (Cmd+click on macOS) produces the message
+//! with the address; [`Terminal::plain_link_click`] makes a plain click do
+//! so. The widget opens nothing itself.
 pub mod grid;
 pub mod keys;
+pub mod report;
 
-pub use grid::{Cell, Flags, Grid, Row};
+pub use grid::{Cell, Flags, Grid, Link, MouseEncoding, MouseMode, Row};
 
 use crate::core::alignment;
 use crate::core::border::{self, Border};
@@ -67,6 +91,7 @@ use crate::core::layout;
 use crate::core::mouse;
 use crate::core::renderer;
 use crate::core::text::{self, Paragraph as _};
+use crate::core::time::{Duration, Instant};
 use crate::core::touch;
 use crate::core::widget;
 use crate::core::widget::operation::{self, Operation};
@@ -103,6 +128,19 @@ impl Timeout for Never {
 pub struct Content {
     grid: Grid,
     parser: Processor<Never>,
+    search: Search,
+}
+
+/// What is searched for, and where it was found.
+#[derive(Debug, Default)]
+struct Search {
+    needle: String,
+    /// The first and the last cell of every place, from the first line on.
+    places: Vec<(Place, Place)>,
+    current: Option<usize>,
+    /// Counts the times another place became the current one: a
+    /// [`Terminal`] that has not seen this number yet scrolls to the place.
+    shown: u64,
 }
 
 impl Content {
@@ -116,18 +154,130 @@ impl Content {
         Self {
             grid: Grid::new(cols, rows, history),
             parser: Processor::new(),
+            search: Search::default(),
         }
     }
 
     /// Feeds bytes the program wrote: text and escape sequences, in any
     /// pieces (a sequence may be cut anywhere).
+    ///
+    /// While a [`search`](Self::search) is on, everything is searched again
+    /// after each call.
     pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.grid, bytes);
+        self.search_again();
     }
 
     /// Gives the grid another size, as when the pseudo-terminal got one.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.grid.resize(cols, rows);
+        self.search_again();
+    }
+
+    /// Looks for `needle` in the history and on the screen and returns in
+    /// how many places it stands. A [`Terminal`] marks them all; the last
+    /// one (the newest) becomes the current place and the terminal scrolls
+    /// to it. Capitals and small letters are the same as long as `needle`
+    /// has no capital in it; a line that was wrapped is searched as one. An
+    /// empty `needle` ends the search, as [`search_clear`](Self::search_clear)
+    /// does.
+    pub fn search(&mut self, needle: &str) -> usize {
+        if needle.is_empty() {
+            self.search_clear();
+            return 0;
+        }
+
+        self.search.needle = needle.to_owned();
+        self.search.current = None;
+        self.search_again();
+        self.search.current = self.search.places.len().checked_sub(1);
+        self.search.shown += 1;
+        self.search.places.len()
+    }
+
+    /// Makes the next place (towards the end) the current one; after the
+    /// last comes the first.
+    pub fn search_next(&mut self) {
+        self.search_step(1);
+    }
+
+    /// Makes the place before (towards the start) the current one; before
+    /// the first comes the last.
+    pub fn search_previous(&mut self) {
+        self.search_step(-1);
+    }
+
+    /// Ends the search: nothing is marked any more.
+    pub fn search_clear(&mut self) {
+        self.search.needle.clear();
+        self.search.places.clear();
+        self.search.current = None;
+    }
+
+    /// What is searched for; empty when nothing is.
+    pub fn search_needle(&self) -> &str {
+        &self.search.needle
+    }
+
+    /// In how many places it stands.
+    pub fn search_count(&self) -> usize {
+        self.search.places.len()
+    }
+
+    /// Which of the places is the current one, counted from 1 at the first
+    /// line: "3 of 17" is `search_position()` of `search_count()`.
+    pub fn search_position(&self) -> Option<usize> {
+        self.search.current.map(|current| current + 1)
+    }
+
+    fn search_step(&mut self, by: isize) {
+        let count = self.search.places.len() as isize;
+
+        if count == 0 {
+            return;
+        }
+
+        let current = self.search.current.map_or(0, |current| {
+            (current as isize + by).rem_euclid(count) as usize
+        });
+
+        self.search.current = Some(current);
+        self.search.shown += 1;
+    }
+
+    fn search_again(&mut self) {
+        if self.search.needle.is_empty() {
+            return;
+        }
+
+        let forgotten = self.grid.forgotten();
+        let case_sensitive = self.search.needle.chars().any(char::is_uppercase);
+        let was = self
+            .search
+            .current
+            .and_then(|current| self.search.places.get(current))
+            .map(|place| place.0);
+
+        self.search.places = self
+            .grid
+            .find(&self.search.needle, case_sensitive)
+            .into_iter()
+            .map(|(start, end)| {
+                (
+                    (forgotten + start.0 as u64, start.1),
+                    (forgotten + end.0 as u64, end.1),
+                )
+            })
+            .collect();
+
+        // The current place stays the current one while it is there
+        self.search.current = was.and_then(|was| {
+            self.search
+                .places
+                .binary_search_by(|place| place.0.cmp(&was))
+                .ok()
+                .or(self.search.places.len().checked_sub(1))
+        });
     }
 
     /// The grid.
@@ -191,6 +341,9 @@ where
     padding: Padding,
     on_input: Option<Box<dyn Fn(Vec<u8>) -> Message + 'a>>,
     on_fit: Option<Box<dyn Fn(u16, u16) -> Message + 'a>>,
+    on_link: Option<Box<dyn Fn(String) -> Message + 'a>>,
+    plain_link_click: bool,
+    on_search: Option<Box<dyn Fn() -> Message + 'a>>,
     class: Theme::Class<'a>,
     last_status: Option<Status>,
 }
@@ -212,6 +365,9 @@ where
             padding: Padding::new(6.0),
             on_input: None,
             on_fit: None,
+            on_link: None,
+            plain_link_click: false,
+            on_search: None,
             class: Theme::default(),
             last_status: None,
         }
@@ -248,6 +404,40 @@ where
     /// that the application can give the pseudo-terminal that size.
     pub fn on_fit(mut self, on_fit: impl Fn(u16, u16) -> Message + 'a) -> Self {
         self.on_fit = Some(Box::new(on_fit));
+        self
+    }
+
+    /// Sets the message for a link that was clicked, with its address: one
+    /// a program wrote out (`https://example.com/a`; the schemes are
+    /// [`grid::SCHEMES`]) or one it put on some text (`OSC 8`). The link
+    /// under the pointer is underlined, and Ctrl+click (Cmd+click on macOS)
+    /// produces the message; see [`plain_link_click`](Self::plain_link_click).
+    /// What happens to the address is the application's: the widget opens
+    /// nothing. While the program in the terminal is told of the mouse, a
+    /// link needs Shift held as well, as a selection does.
+    pub fn on_link(mut self, on_link: impl Fn(String) -> Message + 'a) -> Self {
+        self.on_link = Some(Box::new(on_link));
+        self
+    }
+
+    /// Sets whether a plain click on a link (pressed and released on it
+    /// without a drag) produces the message of [`on_link`](Self::on_link)
+    /// too, which suits a terminal that only shows. A double click on an
+    /// address then both opens it and selects the word.
+    pub fn plain_link_click(mut self, plain: bool) -> Self {
+        self.plain_link_click = plain;
+        self
+    }
+
+    /// Sets the message for Ctrl+Shift+F (Cmd+F on macOS) while the
+    /// [`Terminal`] has the keyboard focus: the key of "find", which would
+    /// otherwise go to the program. The application shows its search field
+    /// and calls [`Content::search`].
+    pub fn on_search(mut self, on_search: Message) -> Self
+    where
+        Message: Clone + 'a,
+    {
+        self.on_search = Some(Box::new(move || on_search.clone()));
         self
     }
 
@@ -339,7 +529,23 @@ struct State {
     cell: Size,
     measured: Option<(Font, f32, f32)>,
     fit: Option<(u16, u16)>,
+    modifiers: keyboard::Modifiers,
+    /// The search place of the [`Content`] it scrolled to last.
+    shown: u64,
+    /// When a drag past the top or the bottom scrolled last.
+    followed: Option<Instant>,
+    /// The link under the pointer: its first and its last cell.
+    hovered: Option<(Place, Place)>,
+    /// The link a plain click began on.
+    pressed_link: Option<String>,
+    /// The button the program was told is down.
+    reported: Option<report::Button>,
+    /// The cell of the screen the program was told of last.
+    reported_cell: Option<(usize, usize)>,
 }
+
+/// How often a drag past the top or the bottom scrolls.
+const FOLLOW: Duration = Duration::from_millis(50);
 
 impl operation::Focusable for State {
     fn is_focused(&self) -> bool {
@@ -443,6 +649,369 @@ where
         (grid.forgotten() + (first + row) as u64, col)
     }
 
+    /// The cell under a point, when there is one: a point outside the
+    /// lines that are shown has none.
+    fn cell_at(
+        &self,
+        state: &State,
+        bounds: Rectangle,
+        position: Point,
+    ) -> Option<Place> {
+        let grid = self.content.grid();
+        let inner = self.inner(bounds);
+        let (first, count) =
+            window(grid, state.scroll, self.visible_rows(state, bounds));
+        let row = ((position.y - inner.y) / state.cell.height.max(1.0)).floor();
+        let col = ((position.x - inner.x) / state.cell.width.max(1.0)).floor();
+
+        (row >= 0.0
+            && col >= 0.0
+            && (row as usize) < count
+            && (col as usize) < grid.cols())
+        .then(|| {
+            (
+                grid.forgotten() + (first + row as usize) as u64,
+                col as usize,
+            )
+        })
+    }
+
+    /// The link under a point.
+    fn link_at(
+        &self,
+        state: &State,
+        bounds: Rectangle,
+        position: Point,
+    ) -> Option<Link> {
+        let grid = self.content.grid();
+        let place = self.cell_at(state, bounds, position)?;
+
+        grid.link_at((place.0 - grid.forgotten()) as usize, place.1)
+    }
+
+    /// The cell of the screen (column and line, as the program counts
+    /// them from 0) under a point; a point outside is the nearest cell.
+    /// `None` while the view is scrolled so far that the point is over the
+    /// history, which the program knows nothing of.
+    fn screen_cell(
+        &self,
+        state: &State,
+        bounds: Rectangle,
+        position: Point,
+    ) -> Option<(usize, usize)> {
+        let grid = self.content.grid();
+        let inner = self.inner(bounds);
+        let visible = self.visible_rows(state, bounds);
+        let (first, _) = window(grid, state.scroll, visible);
+        let row = ((position.y - inner.y) / state.cell.height.max(1.0))
+            .floor()
+            .clamp(0.0, visible.saturating_sub(1) as f32)
+            as usize;
+        let col = ((position.x - inner.x) / state.cell.width.max(1.0))
+            .floor()
+            .clamp(0.0, grid.cols().saturating_sub(1) as f32)
+            as usize;
+        let line = (first + row).checked_sub(grid.history())?;
+
+        Some((col, line.min(grid.rows().saturating_sub(1))))
+    }
+
+    /// Whether the mouse is the program's now: it asked to be told, it can
+    /// be told, and Shift is not held.
+    fn reports(&self, state: &State) -> bool {
+        self.on_input.is_some()
+            && self.content.grid().mouse_mode() != MouseMode::None
+            && !state.modifiers.shift()
+    }
+
+    /// Tells the program what the mouse did, when that is asked for.
+    fn report(
+        &self,
+        state: &mut State,
+        action: report::Action,
+        cell: (usize, usize),
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let grid = self.content.grid();
+
+        if let Some(on_input) = &self.on_input
+            && action.is_reported(grid.mouse_mode())
+            && let Some(bytes) = report::encode(
+                action,
+                cell.0,
+                cell.1,
+                state.modifiers,
+                grid.mouse_encoding(),
+            )
+        {
+            shell.publish(on_input(bytes));
+        }
+
+        state.reported_cell = Some(cell);
+    }
+
+    /// The mouse of a program that asked to be told of it. Returns whether
+    /// the event was the program's, and so nothing for the selection.
+    fn report_mouse(
+        &self,
+        state: &mut State,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+        shell: &mut Shell<'_, Message>,
+    ) -> bool {
+        let button_of = |button: &mouse::Button| match button {
+            mouse::Button::Left => Some(report::Button::Left),
+            mouse::Button::Middle => Some(report::Button::Middle),
+            mouse::Button::Right => Some(report::Button::Right),
+            _ => None,
+        };
+
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(button))
+                if self.reports(state)
+                    && cursor.is_over(bounds)
+                    && !shell.is_event_captured() =>
+            {
+                let Some(button) = button_of(button) else {
+                    return false;
+                };
+                let Some(cell) = cursor
+                    .position()
+                    .and_then(|at| self.screen_cell(state, bounds, at))
+                else {
+                    return false;
+                };
+
+                state.is_focused = true;
+                state.is_typing = true;
+                state.dragging = None;
+                state.reported = Some(button);
+
+                if state.selection.take().is_some() {
+                    shell.request_redraw();
+                }
+
+                self.report(state, report::Action::Press(button), cell, shell);
+                shell.capture_event();
+                true
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(button))
+                if state.reported.is_some()
+                    && state.reported == button_of(button) =>
+            {
+                let held = state.reported.take();
+                let cell = cursor
+                    .position()
+                    .and_then(|at| self.screen_cell(state, bounds, at))
+                    .or(state.reported_cell);
+
+                if let (Some(button), Some(cell)) = (held, cell) {
+                    self.report(
+                        state,
+                        report::Action::Release(button),
+                        cell,
+                        shell,
+                    );
+                }
+
+                true
+            }
+            Event::Mouse(mouse::Event::CursorMoved { .. })
+                if state.reported.is_some()
+                    || (self.reports(state) && cursor.is_over(bounds)) =>
+            {
+                let cell = cursor
+                    .position()
+                    .and_then(|at| self.screen_cell(state, bounds, at));
+
+                // Told once for every cell the pointer comes to
+                if let Some(cell) = cell
+                    && state.reported_cell != Some(cell)
+                {
+                    self.report(
+                        state,
+                        report::Action::Move(state.reported),
+                        cell,
+                        shell,
+                    );
+                }
+
+                state.reported.is_some() || self.reports(state)
+            }
+            Event::Mouse(mouse::Event::WheelScrolled { delta })
+                if self.reports(state)
+                    && cursor.is_over(bounds)
+                    && !shell.is_event_captured() =>
+            {
+                let Some(cell) = cursor
+                    .position()
+                    .and_then(|at| self.screen_cell(state, bounds, at))
+                else {
+                    return false;
+                };
+                let moved = match delta {
+                    mouse::ScrollDelta::Lines { y, .. } => *y,
+                    mouse::ScrollDelta::Pixels { y, .. } => {
+                        y / state.cell.height.max(1.0)
+                    }
+                } + state.wheel;
+                let whole = moved.trunc();
+
+                state.wheel = moved - whole;
+
+                let button = if whole > 0.0 {
+                    report::Button::WheelUp
+                } else {
+                    report::Button::WheelDown
+                };
+
+                for _ in 0..(whole.abs() as usize).min(20) {
+                    self.report(
+                        state,
+                        report::Action::Press(button),
+                        cell,
+                        shell,
+                    );
+                }
+
+                shell.capture_event();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The scroll position once the place a search made current is shown.
+    fn scroll_now(&self, state: &State, bounds: Rectangle) -> usize {
+        let search = &self.content.search;
+        let grid = self.content.grid();
+
+        if search.shown == state.shown {
+            return state.scroll;
+        }
+
+        let Some(index) = search
+            .current
+            .and_then(|current| search.places.get(current))
+            .and_then(|place| place.0.0.checked_sub(grid.forgotten()))
+        else {
+            return state.scroll;
+        };
+
+        let visible = self.visible_rows(state, bounds);
+        let (first, count) = window(grid, state.scroll, visible);
+        let index = index as usize;
+
+        if (first..first + count).contains(&index) {
+            return state.scroll;
+        }
+
+        // In the middle of the view
+        let max = lines(grid).saturating_sub(visible);
+        let first = index.saturating_sub(visible / 2).min(max);
+
+        max - first
+    }
+
+    /// Scrolls to the place a search made current, once.
+    fn show_search(&self, state: &mut State, bounds: Rectangle) {
+        state.scroll = self.scroll_now(state, bounds);
+        state.shown = self.content.search.shown;
+    }
+
+    /// The selection of a drag reaches the cell under `position`. Returns
+    /// whether the selection changed.
+    fn drag_to(
+        &self,
+        state: &mut State,
+        bounds: Rectangle,
+        position: Point,
+    ) -> bool {
+        let Some((from, to, unit)) = state.dragging else {
+            return false;
+        };
+        let grid = self.content.grid();
+        let place = self.place_at(state, bounds, position);
+        let index = (place.0 - grid.forgotten()) as usize;
+        let head = match unit {
+            Unit::Cell => (place, place),
+            Unit::Word => {
+                let (start, end) = grid
+                    .line(index)
+                    .map_or((place.1, place.1), |row| word_at(row, place.1));
+
+                ((place.0, start), (place.0, end))
+            }
+            Unit::Line => ((place.0, 0), (place.0, usize::MAX)),
+        };
+        let selection = (from.min(head.0), to.max(head.1));
+
+        if unit != Unit::Cell || place != from {
+            if state.selection != Some(selection) {
+                state.selection = Some(selection);
+                return true;
+            }
+
+            false
+        } else {
+            state.selection.take().is_some()
+        }
+    }
+
+    /// A drag that is past the top or the bottom scrolls the view, a step
+    /// every [`FOLLOW`] for as long as the pointer is there (further away,
+    /// larger steps), and the selection follows.
+    fn follow(
+        &self,
+        state: &mut State,
+        bounds: Rectangle,
+        position: Point,
+        now: Instant,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        if state.dragging.is_none() {
+            return;
+        }
+
+        let beyond = if position.y < bounds.y {
+            bounds.y - position.y
+        } else if position.y > bounds.y + bounds.height {
+            bounds.y + bounds.height - position.y
+        } else {
+            state.followed = None;
+            return;
+        };
+
+        if state.followed.is_none_or(|last| now >= last + FOLLOW) {
+            let step = 1
+                + ((beyond.abs() / (2.0 * state.cell.height.max(1.0)))
+                    as isize)
+                    .min(4);
+
+            self.scroll_by(
+                state,
+                bounds,
+                if beyond > 0.0 { step } else { -step },
+            );
+            state.followed = Some(now);
+
+            if self.drag_to(state, bounds, position) {
+                shell.request_redraw();
+            }
+        }
+
+        // Again, unless that end is reached
+        let max = lines(self.content.grid())
+            .saturating_sub(self.visible_rows(state, bounds));
+
+        if (beyond > 0.0 && state.scroll < max)
+            || (beyond < 0.0 && state.scroll > 0)
+        {
+            shell.request_redraw_at(now + FOLLOW);
+        }
+    }
+
     fn selected_text(&self, state: &State) -> Option<String> {
         let grid = self.content.grid();
         let (start, end) = state.selection?;
@@ -544,6 +1113,7 @@ where
         let bounds = layout.bounds();
 
         operation.focusable(self.id.as_ref(), bounds, state);
+        self.show_search(state, bounds);
 
         // The lines that are shown, as text: what a test or a tool looks for
         let grid = self.content.grid();
@@ -596,10 +1166,58 @@ where
         }
 
         state.seen_lines = now_lines;
+        self.show_search(state, bounds);
 
         if self.on_input.is_none() {
             state.is_typing = false;
         }
+
+        match event {
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                state.modifiers = *modifiers;
+
+                // The pointer over a link looks different with the key held
+                if state.hovered.is_some() {
+                    shell.request_redraw();
+                }
+            }
+            Event::Keyboard(
+                keyboard::Event::KeyPressed { modifiers, .. }
+                | keyboard::Event::KeyReleased { modifiers, .. },
+            ) => {
+                state.modifiers = *modifiers;
+            }
+            _ => {}
+        }
+
+        // The link under the pointer
+        if let Event::Mouse(mouse::Event::CursorMoved { .. }) = event {
+            let hovered = (self.on_link.is_some()
+                && state.dragging.is_none()
+                && state.reported.is_none()
+                && !self.reports(state))
+            .then(|| {
+                cursor
+                    .position_over(bounds)
+                    .and_then(|at| self.link_at(state, bounds, at))
+            })
+            .flatten()
+            .map(|link| {
+                let forgotten = grid.forgotten();
+
+                (
+                    (forgotten + link.start.0 as u64, link.start.1),
+                    (forgotten + link.end.0 as u64, link.end.1),
+                )
+            });
+
+            if state.hovered != hovered {
+                state.hovered = hovered;
+                shell.request_redraw();
+            }
+        }
+
+        let reported = self.report_mouse(state, event, bounds, cursor, shell);
 
         // How many cells fit
         if let Some(on_fit) = &self.on_fit
@@ -621,6 +1239,7 @@ where
         }
 
         match event {
+            _ if reported => {}
             Event::Mouse(mouse::Event::ButtonPressed(button))
                 if !cursor.is_over(bounds) =>
             {
@@ -651,6 +1270,29 @@ where
                     return;
                 };
 
+                // A link, with the key that opens one
+                state.pressed_link = None;
+
+                if let Some(on_link) = &self.on_link
+                    && matches!(
+                        event,
+                        Event::Mouse(mouse::Event::ButtonPressed(_))
+                    )
+                    && let Some(link) = self.link_at(state, bounds, position)
+                {
+                    if state.modifiers.command() {
+                        state.is_focused = true;
+                        shell.publish(on_link(link.url));
+                        shell.capture_event();
+                        shell.request_redraw();
+                        return;
+                    }
+
+                    if self.plain_link_click {
+                        state.pressed_link = Some(link.url);
+                    }
+                }
+
                 state.is_focused = true;
                 state.is_typing = self.on_input.is_some();
 
@@ -668,6 +1310,8 @@ where
                         state.dragging = Some((place, place, Unit::Cell));
                     }
                     mouse::click::Kind::Double => {
+                        state.pressed_link = None;
+
                         let (start, end) = grid
                             .line(index)
                             .map_or((place.1, place.1), |row| {
@@ -679,6 +1323,8 @@ where
                         state.dragging = Some((word.0, word.1, Unit::Word));
                     }
                     mouse::click::Kind::Triple => {
+                        state.pressed_link = None;
+
                         let line = ((place.0, 0), (place.0, usize::MAX));
 
                         state.selection = Some(line);
@@ -692,44 +1338,27 @@ where
             }
             Event::Mouse(mouse::Event::CursorMoved { .. })
             | Event::Touch(touch::Event::FingerMoved { .. }) => {
-                let Some((from, to, unit)) = state.dragging else {
+                if state.dragging.is_none() {
                     return;
-                };
+                }
+
                 let Some(position) = cursor.position() else {
                     return;
                 };
 
-                // Past the top or the bottom the view follows
-                if position.y < bounds.y {
-                    self.scroll_by(state, bounds, 1);
-                } else if position.y > bounds.y + bounds.height {
-                    self.scroll_by(state, bounds, -1);
-                }
+                // Past the top or the bottom the view follows, and goes on
+                // following while the pointer rests there
+                self.follow(state, bounds, position, Instant::now(), shell);
 
-                let place = self.place_at(state, bounds, position);
-                let index = (place.0 - grid.forgotten()) as usize;
-                let head = match unit {
-                    Unit::Cell => (place, place),
-                    Unit::Word => {
-                        let (start, end) = grid
-                            .line(index)
-                            .map_or((place.1, place.1), |row| {
-                                word_at(row, place.1)
-                            });
-
-                        ((place.0, start), (place.0, end))
-                    }
-                    Unit::Line => ((place.0, 0), (place.0, usize::MAX)),
-                };
-                let selection = (from.min(head.0), to.max(head.1));
-
-                if unit != Unit::Cell || place != from {
-                    if state.selection != Some(selection) {
-                        state.selection = Some(selection);
-                        shell.request_redraw();
-                    }
-                } else if state.selection.take().is_some() {
+                if self.drag_to(state, bounds, position) {
                     shell.request_redraw();
+                }
+            }
+            Event::Window(window::Event::RedrawRequested(now))
+                if state.dragging.is_some() =>
+            {
+                if let Some(position) = cursor.position() {
+                    self.follow(state, bounds, position, *now, shell);
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
@@ -737,11 +1366,26 @@ where
                 touch::Event::FingerLifted { .. }
                 | touch::Event::FingerLost { .. },
             ) => {
+                state.followed = None;
+
                 if state.dragging.take().is_some() {
                     // On X11 and Wayland what is selected is the primary
                     // selection (a middle click pastes it)
                     if let Some(selected) = self.selected_text(state) {
                         clipboard.write(clipboard::Kind::Primary, selected);
+                    }
+
+                    // A plain click on a link: released where it was
+                    // pressed, and nothing was selected on the way
+                    if let Some(pressed) = state.pressed_link.take()
+                        && state.selection.is_none()
+                        && let Some(on_link) = &self.on_link
+                        && cursor
+                            .position()
+                            .and_then(|at| self.link_at(state, bounds, at))
+                            .is_some_and(|link| link.url == pressed)
+                    {
+                        shell.publish(on_link(pressed));
                     }
                 }
             }
@@ -844,6 +1488,16 @@ where
                         )));
                     }
 
+                    shell.capture_event();
+                    return;
+                }
+
+                // Find: the application's
+                if letter.as_deref() == Some("f")
+                    && chord
+                    && let Some(on_search) = &self.on_search
+                {
+                    shell.publish(on_search());
                     shell.capture_event();
                     return;
                 }
@@ -991,9 +1645,11 @@ where
         }
 
         let size = self.size.unwrap_or_else(|| renderer.default_size());
+        let scroll = self.scroll_now(state, bounds);
         let (first, count) =
-            window(grid, state.scroll, self.visible_rows(state, bounds));
+            window(grid, scroll, self.visible_rows(state, bounds));
         let forgotten = grid.forgotten();
+        let search = &self.content.search;
         let max_cols =
             ((inner.width / cell.width).ceil() as usize).min(grid.cols());
 
@@ -1031,7 +1687,7 @@ where
             (fg, has_bg.then_some(bg))
         };
 
-        let cursor_at = (grid.cursor_visible() && state.scroll == 0)
+        let cursor_at = (grid.cursor_visible() && scroll == 0)
             .then(|| (grid.history() + grid.cursor().0, grid.cursor().1));
 
         renderer.with_layer(clip, |renderer| {
@@ -1147,26 +1803,74 @@ where
                     fill(renderer, row, from, col, bg);
                 }
 
-                // The selection
-                if let Some((start, end)) = state.selection {
-                    let line_number = forgotten + index as u64;
-
-                    if (start.0..=end.0).contains(&line_number) {
-                        let from = if line_number == start.0 {
-                            start.1.min(max_cols)
-                        } else {
-                            0
-                        };
-                        let to = if line_number == end.0 {
-                            end.1.saturating_add(1).min(max_cols)
-                        } else {
-                            max_cols
-                        };
-
-                        if to > from {
-                            fill(renderer, row, from, to, style.selection);
-                        }
+                // The part of this line between two cells
+                let line_number = forgotten + index as u64;
+                let span = |start: Place, end: Place| {
+                    if !(start.0..=end.0).contains(&line_number) {
+                        return None;
                     }
+
+                    let from = if line_number == start.0 {
+                        start.1.min(max_cols)
+                    } else {
+                        0
+                    };
+                    let to = if line_number == end.0 {
+                        end.1.saturating_add(1).min(max_cols)
+                    } else {
+                        max_cols
+                    };
+
+                    (to > from).then_some((from, to))
+                };
+
+                // What a search found: every place, and the current one
+                // stronger and framed
+                let found_from = search
+                    .places
+                    .partition_point(|place| place.1.0 < line_number);
+
+                for (number, place) in
+                    search.places.iter().enumerate().skip(found_from)
+                {
+                    if place.0.0 > line_number {
+                        break;
+                    }
+
+                    let Some((from, to)) = span(place.0, place.1) else {
+                        continue;
+                    };
+                    let is_current = search.current == Some(number);
+                    let mark = style.indexed(3);
+
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle {
+                                x: inner.x + from as f32 * cell.width,
+                                y: inner.y + row as f32 * cell.height,
+                                width: (to - from) as f32 * cell.width,
+                                height: cell.height,
+                            },
+                            border: Border {
+                                color: style.text,
+                                width: if is_current { 1.0 } else { 0.0 },
+                                radius: 0.0.into(),
+                            },
+                            ..renderer::Quad::default()
+                        },
+                        mix(
+                            style.background,
+                            mark,
+                            if is_current { 0.6 } else { 0.3 },
+                        ),
+                    );
+                }
+
+                // The selection
+                if let Some((start, end)) = state.selection
+                    && let Some((from, to)) = span(start, end)
+                {
+                    fill(renderer, row, from, to, style.selection);
                 }
 
                 // The text: runs of plain characters of one look are
@@ -1231,6 +1935,27 @@ where
                     );
                 }
 
+                // The link under the pointer is underlined
+                if let Some((start, end)) = state.hovered
+                    && let Some((from, to)) = span(start, end)
+                {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle {
+                                x: inner.x + from as f32 * cell.width,
+                                y: (inner.y
+                                    + row as f32 * cell.height
+                                    + cell.height * 0.92)
+                                    .round(),
+                                width: (to - from) as f32 * cell.width,
+                                height: 1.0,
+                            },
+                            ..renderer::Quad::default()
+                        },
+                        style.text,
+                    );
+                }
+
                 // The cursor: a block while typing, a frame otherwise
                 if let Some((cursor_line, cursor_col)) = cursor_at
                     && cursor_line == index
@@ -1291,16 +2016,26 @@ where
 
     fn mouse_interaction(
         &self,
-        _tree: &Tree,
+        tree: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        if cursor.is_over(layout.bounds()) {
-            mouse::Interaction::Text
-        } else {
+        let state = tree.state.downcast_ref::<State>();
+
+        if !cursor.is_over(layout.bounds()) {
             mouse::Interaction::default()
+        } else if state.hovered.is_some()
+            && (self.plain_link_click || state.modifiers.command())
+        {
+            // A click here opens the link
+            mouse::Interaction::Pointer
+        } else if self.reports(state) {
+            // The mouse is the program's: nothing is selected with it
+            mouse::Interaction::Idle
+        } else {
+            mouse::Interaction::Text
         }
     }
 }

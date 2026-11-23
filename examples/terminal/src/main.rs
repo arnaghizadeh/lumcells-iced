@@ -1,6 +1,8 @@
 use iced::subscription::Inbox;
-use iced::widget::{column, container, row, terminal, text};
-use iced::{Element, Fill, Subscription};
+use iced::widget::{
+    button, column, container, operation, row, terminal, text, text_input,
+};
+use iced::{Center, Element, Fill, Subscription, Task};
 
 use std::io::{Read, Write};
 
@@ -24,10 +26,26 @@ struct Example {
     shell: Result<Shell, String>,
     inbox: Inbox<Message>,
     ended: bool,
+    /// The search field is shown.
+    searching: bool,
+    /// The link that was clicked last.
+    link: Option<String>,
 }
+
+const SEARCH: &str = "search";
 
 #[derive(Debug, Clone)]
 enum Message {
+    /// Ctrl+Shift+F in the terminal, or "Close": the search field comes or
+    /// goes.
+    SearchToggled,
+    /// What is searched for.
+    Search(String),
+    /// To the place before (Enter in the field) or after.
+    SearchPrevious,
+    SearchNext,
+    /// A link was clicked (with Ctrl held).
+    Link(String),
     /// What the shell wrote.
     Output(Vec<u8>),
     /// What was typed or pasted.
@@ -109,11 +127,29 @@ impl Example {
             shell,
             inbox,
             ended: false,
+            searching: false,
+            link: None,
         }
     }
 
-    fn update(&mut self, message: Message) {
+    fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::SearchToggled => {
+                self.searching = !self.searching;
+
+                if self.searching {
+                    return operation::focus(SEARCH);
+                }
+
+                self.content.search_clear();
+            }
+            Message::Search(needle) => {
+                let _ = self.content.search(&needle);
+            }
+            Message::SearchPrevious => self.content.search_previous(),
+            Message::SearchNext => self.content.search_next(),
+            // An application would open it; the example only says which
+            Message::Link(url) => self.link = Some(url),
             Message::Output(bytes) => {
                 self.content.feed(&bytes);
 
@@ -146,6 +182,8 @@ impl Example {
             }
             Message::Ended => self.ended = true,
         }
+
+        Task::none()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -167,15 +205,59 @@ impl Example {
             ),
         };
         let typing = self.shell.is_ok() && !self.ended;
+        let status = match &self.link {
+            Some(link) => format!("{status}  Link: {link}"),
+            None => status,
+        };
+
+        let search = self.searching.then(|| {
+            let found = match (
+                self.content.search_position(),
+                self.content.search_count(),
+            ) {
+                _ if self.content.search_needle().is_empty() => String::new(),
+                (Some(position), count) => format!("{position} of {count}"),
+                (None, _) => "Not found".to_owned(),
+            };
+            let some = self.content.search_count() > 0;
+
+            row![
+                text_input(
+                    "Find in the terminal",
+                    self.content.search_needle()
+                )
+                .id(SEARCH)
+                .on_input(Message::Search)
+                .on_submit(Message::SearchPrevious)
+                .size(13)
+                .width(260),
+                text(found).size(13).width(Fill),
+                button(text("Previous").size(13))
+                    .padding([2, 8])
+                    .on_press_maybe(some.then_some(Message::SearchPrevious)),
+                button(text("Next").size(13))
+                    .padding([2, 8])
+                    .on_press_maybe(some.then_some(Message::SearchNext)),
+                button(text("Close").size(13))
+                    .padding([2, 8])
+                    .style(button::secondary)
+                    .on_press(Message::SearchToggled),
+            ]
+            .spacing(8)
+            .align_y(Center)
+        });
 
         column![
             terminal(&self.content)
                 .on_input_maybe(typing.then_some(Message::Typed))
-                .on_fit(Message::Fit),
+                .on_fit(Message::Fit)
+                .on_link(Message::Link)
+                .on_search(Message::SearchToggled),
+            search,
             container(
                 row![
                     text(status).size(13),
-                    text("Enter or a click: type. Shift+Esc: stop typing. Ctrl+Shift+C / V: copy, paste.")
+                    text("Shift+Esc: stop typing. Ctrl+Shift+C / V / F: copy, paste, find. Ctrl+click: a link.")
                         .size(13)
                         .width(Fill)
                         .align_x(iced::Right),
@@ -210,9 +292,11 @@ mod tests {
             shell: Err("no shell in a test".to_owned()),
             inbox: Inbox::new(),
             ended: false,
+            searching: false,
+            link: None,
         };
 
-        example.update(Message::Output(output.to_vec()));
+        let _ = example.update(Message::Output(output.to_vec()));
         example
     }
 
@@ -221,7 +305,41 @@ mod tests {
         terminal(&example.content)
             .on_input(Message::Typed)
             .on_fit(Message::Fit)
+            .on_link(Message::Link)
+            .on_search(Message::SearchToggled)
             .into()
+    }
+
+    fn numbered(lines: usize) -> Vec<u8> {
+        let mut output = Vec::new();
+
+        for n in 1..=lines {
+            output.extend_from_slice(format!("line {n}\r\n").as_bytes());
+        }
+
+        output
+    }
+
+    fn move_to(ui: &mut Simulator<'_, Message>, to: Point) {
+        ui.point_at(to);
+        let _ = ui.simulate([Event::Mouse(mouse::Event::CursorMoved {
+            position: to,
+        })]);
+    }
+
+    fn hold(ui: &mut Simulator<'_, Message>, modifiers: Modifiers) {
+        let _ = ui.simulate([Event::Keyboard(
+            keyboard::Event::ModifiersChanged(modifiers),
+        )]);
+    }
+
+    fn links(ui: Simulator<'_, Message>) -> Vec<String> {
+        ui.into_messages()
+            .filter_map(|message| match message {
+                Message::Link(url) => Some(url),
+                _ => None,
+            })
+            .collect()
     }
 
     fn bounds(ui: &mut Simulator<'_, Message>, content: &str) -> Rectangle {
@@ -508,13 +626,7 @@ mod tests {
 
     #[test]
     fn the_wheel_scrolls_through_what_scrolled_away() {
-        let mut output = Vec::new();
-
-        for n in 1..=200 {
-            output.extend_from_slice(format!("line {n}\r\n").as_bytes());
-        }
-
-        let example = example(&output);
+        let example = example(&numbered(200));
         let mut ui = simulator(view(&example));
 
         assert!(ui.find("line 200").is_ok());
@@ -527,6 +639,404 @@ mod tests {
 
         assert!(ui.find("line 200").is_err(), "scrolled up");
         assert!(ui.find("line 100").is_ok());
+    }
+
+    #[test]
+    fn a_search_marks_every_place_and_scrolls_to_the_current_one()
+    -> Result<(), iced_test::Error> {
+        let mut example = example(&numbered(200));
+
+        {
+            let mut ui = simulator(view(&example));
+            assert!(ui.find("line 42").is_err(), "far above the window");
+        }
+
+        // "line 4" is in line 4 and in 40 to 49
+        let _ = example.update(Message::Search("line 4".to_owned()));
+        assert_eq!(example.content.search_count(), 1 + 10);
+        assert_eq!(
+            example.content.search_position(),
+            Some(11),
+            "the newest place is the current one"
+        );
+
+        {
+            let mut ui = simulator(view(&example));
+            assert!(ui.find("line 49").is_ok(), "scrolled to it");
+            assert!(ui.find("line 200").is_err());
+        }
+
+        // Before the first comes the last, and back
+        let _ = example.update(Message::SearchNext);
+        assert_eq!(example.content.search_position(), Some(1));
+
+        {
+            let mut ui = simulator(view(&example));
+            assert!(ui.find("line 4").is_ok());
+            assert!(ui.find("line 49").is_err());
+        }
+
+        let _ = example.update(Message::SearchPrevious);
+        let _ = example.update(Message::SearchPrevious);
+        assert_eq!(example.content.search_position(), Some(10));
+
+        // A capital in what is searched for makes capitals count
+        let _ = example.update(Message::Search("Line 4".to_owned()));
+        assert_eq!(example.content.search_count(), 0);
+        assert_eq!(example.content.search_position(), None);
+
+        // What arrives while the search is on is searched too, and the
+        // current place stays the current one
+        let _ = example.update(Message::Search("line 20".to_owned()));
+        assert_eq!(example.content.search_count(), 2);
+        let _ = example.update(Message::SearchPrevious);
+        assert_eq!(example.content.search_position(), Some(1));
+        let _ = example.update(Message::Output(b"line 2000\r\n".to_vec()));
+        assert_eq!(example.content.search_count(), 3);
+        assert_eq!(example.content.search_position(), Some(1));
+
+        // The places are drawn, the current one unlike the others: the
+        // same lines with a place marked, with another one current, and
+        // with none
+        let _ = example.update(Message::Search("line 19".to_owned()));
+        let picture = |example: &Example| {
+            let mut ui = simulator(view(example));
+            assert!(
+                ui.find("line 199").is_ok() && ui.find("line 2000").is_ok()
+            );
+            ui.snapshot(&iced::Theme::Dark).map(|s| s.into_rgba().0)
+        };
+        let last_current = picture(&example)?;
+
+        let _ = example.update(Message::SearchPrevious);
+        assert!(example.content.search_position() < Some(11));
+        let another_current = picture(&example)?;
+
+        let _ = example.update(Message::Search(String::new()));
+        assert_eq!(example.content.search_count(), 0);
+        assert_eq!(example.content.search_needle(), "");
+        let plain = picture(&example)?;
+
+        assert_ne!(last_current, plain);
+        assert_ne!(last_current, another_current);
+        assert_ne!(another_current, plain);
+
+        Ok(())
+    }
+
+    #[test]
+    fn the_key_of_find_shows_the_search_field_of_the_example() {
+        let mut example = example(b"$ ");
+
+        let toggled = {
+            let mut ui = simulator(view(&example));
+
+            press(&mut ui, Point::new(100.0, 100.0));
+            release(&mut ui);
+            key(
+                &mut ui,
+                keyboard::Key::Character("F".into()),
+                if cfg!(target_os = "macos") {
+                    Modifiers::LOGO
+                } else {
+                    Modifiers::CTRL | Modifiers::SHIFT
+                },
+            );
+
+            let messages: Vec<Message> = ui.into_messages().collect();
+
+            assert!(
+                !messages.iter().any(|m| matches!(m, Message::Typed(_))),
+                "the key is not typed into the program"
+            );
+            messages
+                .iter()
+                .filter(|m| matches!(m, Message::SearchToggled))
+                .count()
+        };
+        assert_eq!(toggled, 1);
+
+        let _ = example.update(Message::SearchToggled);
+
+        {
+            let mut ui = simulator(example.view());
+            assert!(ui.find("Previous").is_ok());
+            let _ = ui.click("Close").expect("the field has a way out");
+            assert!(
+                ui.into_messages()
+                    .any(|m| matches!(m, Message::SearchToggled))
+            );
+        }
+
+        let _ = example.update(Message::Search("$".to_owned()));
+        let _ = example.update(Message::SearchToggled);
+        assert_eq!(example.content.search_count(), 0, "closing ends it");
+
+        let mut ui = simulator(example.view());
+        assert!(ui.find("Previous").is_err());
+    }
+
+    #[test]
+    fn a_drag_past_the_top_scrolls_for_as_long_as_it_is_held_there() {
+        use iced::time::{Duration, Instant};
+        use iced::window;
+
+        let example = example(&numbered(200));
+        let mut ui = simulator(view(&example));
+
+        let start = bounds(&mut ui, "line 190");
+        press(&mut ui, Point::new(start.x + 1.0, start.center_y()));
+
+        // Above the terminal, and resting there
+        move_to(&mut ui, Point::new(start.x + 1.0, -8.0));
+        assert!(ui.find("line 100").is_err());
+
+        let begun = Instant::now() + Duration::from_millis(60);
+
+        for frame in 0..90 {
+            let _ =
+                ui.simulate([Event::Window(window::Event::RedrawRequested(
+                    begun + Duration::from_millis(60) * frame,
+                ))]);
+        }
+
+        assert!(
+            ui.find("line 100").is_ok(),
+            "the view went up while the pointer did not move"
+        );
+        assert!(ui.find("line 190").is_err());
+
+        // Frames that come sooner than the step do not scroll
+        let top = |ui: &mut Simulator<'_, Message>| {
+            (1..=200)
+                .find(|n| ui.find(format!("line {n}")).is_ok())
+                .expect("a line is shown")
+        };
+        let before = top(&mut ui);
+        let later = begun + Duration::from_millis(60) * 89;
+
+        for _ in 0..20 {
+            let _ = ui.simulate([Event::Window(
+                window::Event::RedrawRequested(later),
+            )]);
+        }
+
+        assert_eq!(top(&mut ui), before);
+
+        release(&mut ui);
+
+        let selected = ui.clipboard(Kind::Primary).expect("a selection");
+        assert!(selected.ends_with("line 189\nl"), "{selected:?}");
+        assert!(
+            selected.lines().count() > 60,
+            "from where the view went to: {} lines",
+            selected.lines().count()
+        );
+
+        // Once released nothing follows any more
+        let _ = ui.simulate([Event::Window(window::Event::RedrawRequested(
+            later + Duration::from_secs(1),
+        ))]);
+        assert_eq!(top(&mut ui), before);
+    }
+
+    #[test]
+    fn a_program_that_asks_is_told_of_the_mouse() {
+        // Presses and releases, in digits (what vim, htop and tmux ask for)
+        let example = example(b"one\r\ntwo\r\nthree\x1b[?1000h\x1b[?1006h");
+        let mut ui = simulator(view(&example));
+
+        let three = bounds(&mut ui, "three");
+        let two = bounds(&mut ui, "two");
+        let at = Point::new(three.x + 1.0, three.center_y());
+
+        press(&mut ui, at);
+        // In this mode a drag is not told
+        move_to(&mut ui, Point::new(two.x + 1.0, two.center_y()));
+        move_to(&mut ui, at);
+        release(&mut ui);
+
+        let _ = ui.simulate([Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 },
+        })]);
+        let _ = ui.simulate([Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: -2.0 },
+        })]);
+
+        ui.point_at(at);
+        let _ = ui.simulate([
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)),
+        ]);
+
+        assert_eq!(ui.clipboard(Kind::Primary), None, "nothing is selected");
+        assert_eq!(
+            String::from_utf8(typed(ui)).unwrap(),
+            "\x1b[<0;1;3M\x1b[<0;1;3m\
+             \x1b[<64;1;3M\x1b[<65;1;3M\x1b[<65;1;3M\
+             \x1b[<2;1;3M\x1b[<2;1;3m"
+        );
+    }
+
+    #[test]
+    fn a_drag_is_told_when_asked_and_the_old_encoding_is_three_bytes() {
+        let example = example(b"one\r\ntwo\r\nthree\x1b[?1002h");
+        let mut ui = simulator(view(&example));
+
+        let one = bounds(&mut ui, "one");
+        let two = bounds(&mut ui, "two");
+
+        // Without a button nothing is told in this mode
+        move_to(&mut ui, Point::new(one.x + 1.0, one.center_y()));
+        press(&mut ui, Point::new(one.x + 1.0, one.center_y()));
+        move_to(&mut ui, Point::new(two.x + 1.0, two.center_y()));
+        // The same cell again says nothing
+        move_to(&mut ui, Point::new(two.x + 2.0, two.center_y()));
+        release(&mut ui);
+
+        assert_eq!(
+            typed(ui),
+            b"\x1b[M\x20\x21\x21\x1b[M\x40\x21\x22\x1b[M\x23\x21\x22"
+        );
+    }
+
+    #[test]
+    fn every_movement_is_told_to_a_program_that_asks_for_it() {
+        let example = example(b"one\r\ntwo\r\n\x1b[?1003h\x1b[?1006h");
+        let mut ui = simulator(view(&example));
+
+        let one = bounds(&mut ui, "one");
+        let two = bounds(&mut ui, "two");
+
+        move_to(&mut ui, Point::new(one.x + 1.0, one.center_y()));
+        move_to(&mut ui, Point::new(two.x + 1.0, two.center_y()));
+
+        assert_eq!(typed(ui), b"\x1b[<35;1;1M\x1b[<35;1;2M");
+    }
+
+    #[test]
+    fn shift_gives_the_mouse_back_to_the_selection() {
+        let example = example(b"first line\r\n\x1b[?1000h\x1b[?1006h");
+        let mut ui = simulator(view(&example));
+
+        let first = bounds(&mut ui, "first line");
+
+        hold(&mut ui, Modifiers::SHIFT);
+        drag(
+            &mut ui,
+            Point::new(first.x + 1.0, first.center_y()),
+            Point::new(first.x + first.width - 1.0, first.center_y()),
+        );
+
+        assert_eq!(ui.clipboard(Kind::Primary), Some("first line"));
+        assert_eq!(typed(ui), b"", "the program is told nothing");
+    }
+
+    #[test]
+    fn a_terminal_that_only_shows_tells_no_program_of_the_mouse() {
+        let example = example(b"a recording\r\n\x1b[?1003h\x1b[?1006h");
+        let mut ui =
+            simulator(Element::from(terminal::<Message, _>(&example.content)));
+
+        let line = bounds(&mut ui, "a recording");
+        drag(
+            &mut ui,
+            Point::new(line.x + 1.0, line.center_y()),
+            Point::new(line.x + line.width - 1.0, line.center_y()),
+        );
+
+        assert_eq!(ui.clipboard(Kind::Primary), Some("a recording"));
+        assert_eq!(ui.into_messages().count(), 0);
+    }
+
+    #[test]
+    fn a_link_is_clicked_with_the_command_key_held() {
+        let example =
+            example(b"https://example.com/docs is the manual\r\nno link\r\n");
+
+        // A plain click is a click into the terminal
+        {
+            let mut ui = simulator(view(&example));
+            let line =
+                bounds(&mut ui, "https://example.com/docs is the manual");
+            let at = Point::new(line.x + 20.0, line.center_y());
+
+            move_to(&mut ui, at);
+            press(&mut ui, at);
+            release(&mut ui);
+            assert_eq!(links(ui), [] as [String; 0]);
+        }
+
+        let mut ui = simulator(view(&example));
+        let line = bounds(&mut ui, "https://example.com/docs is the manual");
+        let other = bounds(&mut ui, "no link");
+        let at = Point::new(line.x + 20.0, line.center_y());
+
+        hold(
+            &mut ui,
+            if cfg!(target_os = "macos") {
+                Modifiers::LOGO
+            } else {
+                Modifiers::CTRL
+            },
+        );
+        move_to(&mut ui, at);
+        press(&mut ui, at);
+        release(&mut ui);
+
+        // Where no link is, the key changes nothing
+        press(&mut ui, Point::new(other.x + 20.0, other.center_y()));
+        release(&mut ui);
+
+        assert_eq!(ui.clipboard(Kind::Primary), None, "it selects nothing");
+        assert_eq!(links(ui), ["https://example.com/docs"]);
+    }
+
+    #[test]
+    fn a_plain_click_opens_a_link_where_that_is_asked_for() {
+        let example =
+            example(b"https://example.com/docs is the manual\r\nno link\r\n");
+        let view = || -> Element<'_, Message> {
+            terminal(&example.content)
+                .on_link(Message::Link)
+                .plain_link_click(true)
+                .into()
+        };
+
+        let mut ui = simulator(view());
+        let line = bounds(&mut ui, "https://example.com/docs is the manual");
+        let at = Point::new(line.x + 20.0, line.center_y());
+
+        press(&mut ui, at);
+        release(&mut ui);
+        assert_eq!(links(ui), ["https://example.com/docs"]);
+
+        // A drag that began on it selects and opens nothing
+        let mut ui = simulator(view());
+        drag(
+            &mut ui,
+            at,
+            Point::new(line.x + line.width - 1.0, line.center_y()),
+        );
+        assert!(ui.clipboard(Kind::Primary).is_some());
+        assert_eq!(links(ui), [] as [String; 0]);
+    }
+
+    #[test]
+    fn the_link_under_the_pointer_is_underlined() -> Result<(), iced_test::Error>
+    {
+        let example = example(b"https://example.com/docs is the manual\r\n");
+        let mut ui = simulator(view(&example));
+        let line = bounds(&mut ui, "https://example.com/docs is the manual");
+
+        move_to(&mut ui, Point::new(line.x + 20.0, line.center_y()));
+        let over = ui.snapshot(&iced::Theme::Dark)?.into_rgba().0;
+
+        move_to(&mut ui, Point::new(line.x + 20.0, line.center_y() + 200.0));
+        let away = ui.snapshot(&iced::Theme::Dark)?.into_rgba().0;
+
+        assert_ne!(over, away);
+        Ok(())
     }
 
     #[test]
