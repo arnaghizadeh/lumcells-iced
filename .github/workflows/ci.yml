@@ -1,0 +1,99 @@
+# lumcells-iced: the one workflow of the fork.
+#
+#   check     cargo check --workspace and the unit tests on Linux, Windows and macOS
+#   lint      clippy and rustfmt on Linux
+#   examples  the examples that the Lumcells patches add, built, tested and started on Linux
+#             under Xvfb
+#
+# The compiler is the one the Lumcells Drive repository builds with (rust-version in Cargo.toml).
+name: CI
+on:
+  push:
+    branches: [lumcells]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: --deny warnings
+  ICED_TEST_BACKEND: tiny-skia
+  RUST_VERSION: "1.88"
+  LINUX_PACKAGES: libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev
+
+jobs:
+  check:
+    name: check and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check-${{ matrix.os }}
+      - name: Install system packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get install -y $LINUX_PACKAGES
+      - name: cargo check --workspace
+        run: cargo check --workspace --all-targets --locked
+      - name: Unit tests
+        run: cargo test --workspace --locked
+      - name: Unit tests that are marked ignored
+        run: cargo test --workspace --locked -- --ignored
+
+  lint:
+    name: clippy and rustfmt (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy,rustfmt --no-self-update
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint
+      - name: Install system packages
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get install -y $LINUX_PACKAGES
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo lint
+
+  examples:
+    name: the fork's examples under Xvfb (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: examples
+      - name: Install system packages
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get install -y $LINUX_PACKAGES xvfb dbus-x11 at-spi2-core
+      - name: Build, test and start each example
+        run: .github/scripts/fork-examples.sh

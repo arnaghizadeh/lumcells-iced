@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Lumcells
+What the Lumcells fork (`lumcells` branch, https://github.com/arnaghizadeh/lumcells-iced) adds
+on top of the upstream `0.14` branch. Newest last.
+
+### Added
+- One CI workflow for the fork (`.github/workflows/ci.yml`): `cargo check --workspace` and the unit tests on Linux, Windows and macOS, clippy and rustfmt on Linux, the examples of the fork built, tested and started under Xvfb (`.github/scripts/fork-examples.sh`). Upstream's workflows are removed.
+
 ## [Unreleased]
 
 ## [0.14.0] - 2025-12-07
