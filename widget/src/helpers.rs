@@ -1279,13 +1279,13 @@ pub use crate::markdown::view as markdown;
 /// ```
 /// ![Checkbox drawn by `iced_wgpu`](https://github.com/iced-rs/iced/blob/7760618fb112074bc40b148944521f312152012a/docs/images/checkbox.png?raw=true)
 pub fn checkbox<'a, Message, Theme, Renderer>(
-    is_checked: bool,
+    state: impl Into<checkbox::State>,
 ) -> Checkbox<'a, Message, Theme, Renderer>
 where
     Theme: checkbox::Catalog + 'a,
     Renderer: core::text::Renderer,
 {
-    Checkbox::new(is_checked)
+    Checkbox::new(state)
 }
 
 /// Creates a new [`Radio`].

@@ -32,6 +32,7 @@
 //! ```
 //! ![Checkbox drawn by `iced_wgpu`](https://github.com/iced-rs/iced/blob/7760618fb112074bc40b148944521f312152012a/docs/images/checkbox.png?raw=true)
 use crate::core::alignment;
+use crate::core::border;
 use crate::core::keyboard;
 use crate::core::layout;
 use crate::core::mouse;
@@ -90,7 +91,7 @@ pub struct Checkbox<
     Renderer: text::Renderer,
     Theme: Catalog,
 {
-    is_checked: bool,
+    state: State,
     on_toggle: Option<Box<dyn Fn(bool) -> Message + 'a>>,
     label: Option<text::Fragment<'a>>,
     width: Length,
@@ -102,6 +103,7 @@ pub struct Checkbox<
     text_wrapping: text::Wrapping,
     font: Option<Renderer::Font>,
     icon: Icon<Renderer::Font>,
+    indeterminate_icon: Option<Icon<Renderer::Font>>,
     class: Theme::Class<'a>,
     last_status: Option<Status>,
     id: Option<widget::Id>,
@@ -118,10 +120,11 @@ where
     /// Creates a new [`Checkbox`].
     ///
     /// It expects:
-    ///   * a boolean describing whether the [`Checkbox`] is checked or not
-    pub fn new(is_checked: bool) -> Self {
+    ///   * the [`State`] of the [`Checkbox`]; a boolean describing whether
+    ///     it is checked or not converts into one
+    pub fn new(state: impl Into<State>) -> Self {
         Checkbox {
-            is_checked,
+            state: state.into(),
             on_toggle: None,
             label: None,
             width: Length::Shrink,
@@ -139,6 +142,7 @@ where
                 line_height: text::LineHeight::default(),
                 shaping: text::Shaping::Basic,
             },
+            indeterminate_icon: None,
             class: Theme::default(),
             last_status: None,
             id: None,
@@ -244,6 +248,15 @@ where
         self
     }
 
+    /// Sets the [`Icon`] of a [`Checkbox`] that is
+    /// [`State::Indeterminate`].
+    ///
+    /// By default, a dash is drawn.
+    pub fn indeterminate_icon(mut self, icon: Icon<Renderer::Font>) -> Self {
+        self.indeterminate_icon = Some(icon);
+        self
+    }
+
     /// Sets the style of the [`Checkbox`].
     #[must_use]
     pub fn style(mut self, style: impl Fn(&Theme, Status) -> Style + 'a) -> Self
@@ -263,13 +276,14 @@ where
     }
 }
 
-/// The state of a [`Checkbox`]: its label and whether it has the keyboard focus.
-struct State<P: text::Paragraph> {
+/// What a [`Checkbox`] keeps between frames: its label and whether it has the
+/// keyboard focus.
+struct Internal<P: text::Paragraph> {
     is_focused: bool,
     text: widget::text::State<P>,
 }
 
-impl<P: text::Paragraph> Default for State<P> {
+impl<P: text::Paragraph> Default for Internal<P> {
     fn default() -> Self {
         Self {
             is_focused: false,
@@ -278,7 +292,7 @@ impl<P: text::Paragraph> Default for State<P> {
     }
 }
 
-impl<P: text::Paragraph> operation::Focusable for State<P> {
+impl<P: text::Paragraph> operation::Focusable for Internal<P> {
     fn is_focused(&self) -> bool {
         self.is_focused
     }
@@ -299,11 +313,11 @@ where
     Theme: Catalog,
 {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<State<Renderer::Paragraph>>()
+        tree::Tag::of::<Internal<Renderer::Paragraph>>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::<Renderer::Paragraph>::default())
+        tree::State::new(Internal::<Renderer::Paragraph>::default())
     }
 
     fn size(&self) -> Size<Length> {
@@ -329,8 +343,9 @@ where
             |_| layout::Node::new(Size::new(self.size, self.size)),
             |limits| {
                 if let Some(label) = self.label.as_deref() {
-                    let state =
-                        tree.state.downcast_mut::<State<Renderer::Paragraph>>();
+                    let state = tree
+                        .state
+                        .downcast_mut::<Internal<Renderer::Paragraph>>();
 
                     widget::text::layout(
                         &mut state.text,
@@ -372,7 +387,8 @@ where
         if let Event::Mouse(mouse::Event::ButtonPressed(_))
         | Event::Touch(touch::Event::FingerPressed { .. }) = event
         {
-            let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
+            let state =
+                tree.state.downcast_mut::<Internal<Renderer::Paragraph>>();
 
             if state.is_focused && !cursor.is_over(layout.bounds()) {
                 state.is_focused = false;
@@ -386,7 +402,7 @@ where
                 let mouse_over = cursor.is_over(layout.bounds());
 
                 if mouse_over && let Some(on_toggle) = &self.on_toggle {
-                    shell.publish((on_toggle)(!self.is_checked));
+                    shell.publish((on_toggle)(!self.state.is_checked()));
                     shell.capture_event();
                 }
             }
@@ -400,11 +416,11 @@ where
                 ..
             }) => {
                 let state =
-                    tree.state.downcast_ref::<State<Renderer::Paragraph>>();
+                    tree.state.downcast_ref::<Internal<Renderer::Paragraph>>();
 
                 if state.is_focused && !shell.is_event_captured() {
                     if let Some(on_toggle) = &self.on_toggle {
-                        shell.publish((on_toggle)(!self.is_checked));
+                        shell.publish((on_toggle)(!self.state.is_checked()));
                         shell.capture_event();
                     }
                 }
@@ -415,20 +431,20 @@ where
         let current_status = {
             let is_mouse_over = cursor.is_over(layout.bounds());
             let is_disabled = self.on_toggle.is_none();
-            let is_checked = self.is_checked;
+            let state = self.state;
             let is_focused = tree
                 .state
-                .downcast_ref::<State<Renderer::Paragraph>>()
+                .downcast_ref::<Internal<Renderer::Paragraph>>()
                 .is_focused;
 
             if is_disabled {
-                Status::Disabled { is_checked }
+                Status::Disabled { state }
             } else if is_focused {
-                Status::Focused { is_checked }
+                Status::Focused { state }
             } else if is_mouse_over {
-                Status::Hovered { is_checked }
+                Status::Hovered { state }
             } else {
-                Status::Active { is_checked }
+                Status::Active { state }
             }
         };
 
@@ -471,9 +487,8 @@ where
 
         let style = theme.style(
             &self.class,
-            self.last_status.unwrap_or(Status::Disabled {
-                is_checked: self.is_checked,
-            }),
+            self.last_status
+                .unwrap_or(Status::Disabled { state: self.state }),
         );
 
         {
@@ -489,16 +504,22 @@ where
                 style.background,
             );
 
-            let Icon {
+            let icon = match self.state {
+                State::Unchecked => None,
+                State::Checked => Some(&self.icon),
+                State::Indeterminate => self.indeterminate_icon.as_ref(),
+            };
+
+            if let Some(Icon {
                 font,
                 code_point,
                 size,
                 line_height,
                 shaping,
-            } = &self.icon;
-            let size = size.unwrap_or(Pixels(bounds.height * 0.7));
+            }) = icon
+            {
+                let size = size.unwrap_or(Pixels(bounds.height * 0.7));
 
-            if self.is_checked {
                 renderer.fill_text(
                     text::Text {
                         content: code_point.to_string(),
@@ -515,6 +536,26 @@ where
                     style.icon_color,
                     *viewport,
                 );
+            } else if self.state == State::Indeterminate {
+                // The dash: a bar across the middle of the box
+                let width = (bounds.width * 0.5).round();
+                let height = (bounds.height * 0.125).round().max(1.0);
+
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: Rectangle {
+                            x: bounds.x
+                                + ((bounds.width - width) / 2.0).round(),
+                            y: bounds.y
+                                + ((bounds.height - height) / 2.0).round(),
+                            width,
+                            height,
+                        },
+                        border: border::rounded(height / 2.0),
+                        ..renderer::Quad::default()
+                    },
+                    style.icon_color,
+                );
             }
         }
 
@@ -524,7 +565,8 @@ where
 
         {
             let label_layout = children.next().unwrap();
-            let state: &State<Renderer::Paragraph> = tree.state.downcast_ref();
+            let state: &Internal<Renderer::Paragraph> =
+                tree.state.downcast_ref();
 
             crate::text::draw(
                 renderer,
@@ -546,7 +588,7 @@ where
         _renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
+        let state = tree.state.downcast_mut::<Internal<Renderer::Paragraph>>();
 
         if self.on_toggle.is_some() {
             operation.focusable(self.id.as_ref(), layout.bounds(), state);
@@ -590,30 +632,100 @@ pub struct Icon<Font> {
     pub shaping: text::Shaping,
 }
 
+/// The state of a [`Checkbox`].
+///
+/// A `bool` converts into it: `true` is [`State::Checked`], `false` is
+/// [`State::Unchecked`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum State {
+    /// The [`Checkbox`] is not ticked.
+    #[default]
+    Unchecked,
+    /// The [`Checkbox`] is ticked.
+    Checked,
+    /// The [`Checkbox`] is ticked "in part": it stands for several things
+    /// of which some are ticked (a folder, "select all"). A dash is drawn.
+    ///
+    /// A click on it asks for `true`.
+    Indeterminate,
+}
+
+impl State {
+    /// Returns whether the [`State`] is [`State::Checked`].
+    pub fn is_checked(self) -> bool {
+        self == State::Checked
+    }
+
+    /// Returns whether the [`State`] is [`State::Indeterminate`].
+    pub fn is_indeterminate(self) -> bool {
+        self == State::Indeterminate
+    }
+
+    /// Returns the [`State`] of something made of parts: all of them ticked
+    /// is [`State::Checked`], none is [`State::Unchecked`], some is
+    /// [`State::Indeterminate`].
+    pub fn of_parts(ticked: usize, total: usize) -> Self {
+        if ticked == 0 {
+            State::Unchecked
+        } else if ticked >= total {
+            State::Checked
+        } else {
+            State::Indeterminate
+        }
+    }
+}
+
+impl From<bool> for State {
+    fn from(is_checked: bool) -> Self {
+        if is_checked {
+            State::Checked
+        } else {
+            State::Unchecked
+        }
+    }
+}
+
+impl Status {
+    /// Returns the [`State`] of the [`Checkbox`] with this [`Status`].
+    pub fn state(self) -> State {
+        match self {
+            Status::Active { state }
+            | Status::Hovered { state }
+            | Status::Disabled { state }
+            | Status::Focused { state } => state,
+        }
+    }
+
+    /// Returns whether the [`Checkbox`] with this [`Status`] is checked.
+    pub fn is_checked(self) -> bool {
+        self.state().is_checked()
+    }
+}
+
 /// The possible status of a [`Checkbox`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     /// The [`Checkbox`] can be interacted with.
     Active {
-        /// Indicates if the [`Checkbox`] is currently checked.
-        is_checked: bool,
+        /// The [`State`] of the [`Checkbox`].
+        state: State,
     },
     /// The [`Checkbox`] can be interacted with and it is being hovered.
     Hovered {
-        /// Indicates if the [`Checkbox`] is currently checked.
-        is_checked: bool,
+        /// The [`State`] of the [`Checkbox`].
+        state: State,
     },
     /// The [`Checkbox`] cannot be interacted with.
     Disabled {
-        /// Indicates if the [`Checkbox`] is currently checked.
-        is_checked: bool,
+        /// The [`State`] of the [`Checkbox`].
+        state: State,
     },
     /// The [`Checkbox`] has the keyboard focus: Space and Enter toggle it.
     ///
     /// A style is expected to draw a focus ring; see [`focus_ring`].
     Focused {
-        /// Indicates if the [`Checkbox`] is currently checked.
-        is_checked: bool,
+        /// The [`State`] of the [`Checkbox`].
+        state: State,
     },
 }
 
@@ -664,36 +776,36 @@ pub fn primary(theme: &Theme, status: Status) -> Style {
     let palette = theme.extended_palette();
 
     match status {
-        Status::Active { is_checked } => styled(
+        Status::Active { state } => styled(
             palette.background.strong.color,
             palette.background.base,
             palette.primary.base.text,
             palette.primary.base,
-            is_checked,
+            state,
         ),
-        Status::Hovered { is_checked } => styled(
+        Status::Hovered { state } => styled(
             palette.background.strong.color,
             palette.background.weak,
             palette.primary.base.text,
             palette.primary.strong,
-            is_checked,
+            state,
         ),
-        Status::Focused { is_checked } => focus_ring(
+        Status::Focused { state } => focus_ring(
             theme,
             styled(
                 palette.background.strong.color,
                 palette.background.weak,
                 palette.primary.base.text,
                 palette.primary.strong,
-                is_checked,
+                state,
             ),
         ),
-        Status::Disabled { is_checked } => styled(
+        Status::Disabled { state } => styled(
             palette.background.weak.color,
             palette.background.weaker,
             palette.primary.base.text,
             palette.background.strong,
-            is_checked,
+            state,
         ),
     }
 }
@@ -703,36 +815,36 @@ pub fn secondary(theme: &Theme, status: Status) -> Style {
     let palette = theme.extended_palette();
 
     match status {
-        Status::Active { is_checked } => styled(
+        Status::Active { state } => styled(
             palette.background.strong.color,
             palette.background.base,
             palette.background.base.text,
             palette.background.strong,
-            is_checked,
+            state,
         ),
-        Status::Hovered { is_checked } => styled(
+        Status::Hovered { state } => styled(
             palette.background.strong.color,
             palette.background.weak,
             palette.background.base.text,
             palette.background.strong,
-            is_checked,
+            state,
         ),
-        Status::Focused { is_checked } => focus_ring(
+        Status::Focused { state } => focus_ring(
             theme,
             styled(
                 palette.background.strong.color,
                 palette.background.weak,
                 palette.background.base.text,
                 palette.background.strong,
-                is_checked,
+                state,
             ),
         ),
-        Status::Disabled { is_checked } => styled(
+        Status::Disabled { state } => styled(
             palette.background.weak.color,
             palette.background.weak,
             palette.background.base.text,
             palette.background.weak,
-            is_checked,
+            state,
         ),
     }
 }
@@ -742,36 +854,36 @@ pub fn success(theme: &Theme, status: Status) -> Style {
     let palette = theme.extended_palette();
 
     match status {
-        Status::Active { is_checked } => styled(
+        Status::Active { state } => styled(
             palette.background.weak.color,
             palette.background.base,
             palette.success.base.text,
             palette.success.base,
-            is_checked,
+            state,
         ),
-        Status::Hovered { is_checked } => styled(
+        Status::Hovered { state } => styled(
             palette.background.strong.color,
             palette.background.weak,
             palette.success.base.text,
             palette.success.strong,
-            is_checked,
+            state,
         ),
-        Status::Focused { is_checked } => focus_ring(
+        Status::Focused { state } => focus_ring(
             theme,
             styled(
                 palette.background.strong.color,
                 palette.background.weak,
                 palette.success.base.text,
                 palette.success.strong,
-                is_checked,
+                state,
             ),
         ),
-        Status::Disabled { is_checked } => styled(
+        Status::Disabled { state } => styled(
             palette.background.weak.color,
             palette.background.weak,
             palette.success.base.text,
             palette.success.weak,
-            is_checked,
+            state,
         ),
     }
 }
@@ -781,36 +893,36 @@ pub fn danger(theme: &Theme, status: Status) -> Style {
     let palette = theme.extended_palette();
 
     match status {
-        Status::Active { is_checked } => styled(
+        Status::Active { state } => styled(
             palette.background.strong.color,
             palette.background.base,
             palette.danger.base.text,
             palette.danger.base,
-            is_checked,
+            state,
         ),
-        Status::Hovered { is_checked } => styled(
+        Status::Hovered { state } => styled(
             palette.background.strong.color,
             palette.background.weak,
             palette.danger.base.text,
             palette.danger.strong,
-            is_checked,
+            state,
         ),
-        Status::Focused { is_checked } => focus_ring(
+        Status::Focused { state } => focus_ring(
             theme,
             styled(
                 palette.background.strong.color,
                 palette.background.weak,
                 palette.danger.base.text,
                 palette.danger.strong,
-                is_checked,
+                state,
             ),
         ),
-        Status::Disabled { is_checked } => styled(
+        Status::Disabled { state } => styled(
             palette.background.weak.color,
             palette.background.weak,
             palette.danger.base.text,
             palette.danger.weak,
-            is_checked,
+            state,
         ),
     }
 }
@@ -837,9 +949,10 @@ fn styled(
     base: palette::Pair,
     icon_color: Color,
     accent: palette::Pair,
-    is_checked: bool,
+    state: State,
 ) -> Style {
-    let (background, border) = if is_checked {
+    // A box that is ticked in part is filled like one that is ticked
+    let (background, border) = if state != State::Unchecked {
         (accent, accent.color)
     } else {
         (base, border_color)
