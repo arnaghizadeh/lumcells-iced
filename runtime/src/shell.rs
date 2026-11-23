@@ -22,6 +22,51 @@ pub struct Settings {
     ///
     /// By default, there is none.
     pub tray: Option<crate::tray::Settings>,
+
+    /// The identifier under which one instance of the program runs per
+    /// user (a reverse domain name, like `com.example.app`): a process
+    /// started while another one runs hands it its arguments and ends.
+    ///
+    /// By default, there is none: every start is a program of its own.
+    pub single_instance: Option<String>,
+
+    /// The [`ActivationPolicy`] the program starts with on macOS.
+    ///
+    /// By default, the one of the platform ([`ActivationPolicy::Regular`]).
+    pub activation_policy: Option<ActivationPolicy>,
+}
+
+/// How a program shows on macOS. Nothing on other platforms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ActivationPolicy {
+    /// An ordinary program: an icon in the Dock, a menu bar, a place in
+    /// the application switcher.
+    #[default]
+    Regular,
+    /// A program without a Dock icon and menu bar, that can still show
+    /// windows and be active: one that lives in the menu bar (the tray).
+    Accessory,
+    /// A program that shows nothing and cannot be made active.
+    Prohibited,
+}
+
+/// A shell operation.
+#[derive(Debug, Clone)]
+pub enum Action {
+    /// Change the [`ActivationPolicy`] of the running program (macOS).
+    SetActivationPolicy(ActivationPolicy),
+}
+
+/// Changes the [`ActivationPolicy`] of the running program on macOS: for
+/// instance to [`ActivationPolicy::Regular`] while a window is open and back
+/// to [`ActivationPolicy::Accessory`] when the last one is closed, so that
+/// the program is in the Dock only while it has something to show.
+///
+/// Does nothing on other platforms.
+pub fn set_activation_policy<T>(policy: ActivationPolicy) -> crate::Task<T> {
+    crate::task::effect(crate::Action::Shell(Action::SetActivationPolicy(
+        policy,
+    )))
 }
 
 impl Default for Settings {
@@ -29,6 +74,8 @@ impl Default for Settings {
         Self {
             tab_focus: true,
             tray: None,
+            single_instance: None,
+            activation_policy: None,
         }
     }
 }

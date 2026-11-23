@@ -599,6 +599,15 @@ pub mod mouse {
     };
 }
 
+pub mod single_instance {
+    //! Run one instance of a program per user:
+    //! `iced::daemon(..).single_instance("com.example.app")`.
+    //!
+    //! A second start hands its arguments to the first and ends; the first
+    //! receives them through [`listen`].
+    pub use crate::shell::single_instance::listen;
+}
+
 pub mod tray {
     //! Show an icon with a menu in the tray of the desktop.
     //!

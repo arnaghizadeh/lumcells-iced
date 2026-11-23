@@ -6,3 +6,5 @@ pub use icon::Icon;
 
 pub use crate::core::window::*;
 pub use crate::runtime::window::*;
+
+pub use crate::runtime::shell::{ActivationPolicy, set_activation_policy};

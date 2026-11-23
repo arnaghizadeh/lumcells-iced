@@ -18,7 +18,8 @@ fi
 packages=()
 for e in "${EXAMPLES[@]}"; do packages+=(--package "$e"); done
 cargo build --locked "${packages[@]}"
-ICED_TEST_BACKEND=tiny-skia cargo test --locked "${packages[@]}"
+# Under Xvfb: some of the tests start the built example
+ICED_TEST_BACKEND=tiny-skia xvfb-run -a cargo test --locked "${packages[@]}"
 
 target="${CARGO_TARGET_DIR:-target}/debug"
 for e in "${EXAMPLES[@]}"; do

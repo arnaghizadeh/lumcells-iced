@@ -65,6 +65,9 @@ pub enum Action<T> {
     /// Run a tray icon action.
     Tray(tray::Action),
 
+    /// Run a shell action.
+    Shell(shell::Action),
+
     /// Recreate all user interfaces and redraw all windows.
     Reload,
 
@@ -93,6 +96,7 @@ impl<T> Action<T> {
             Action::System(action) => Err(Action::System(action)),
             Action::Image(action) => Err(Action::Image(action)),
             Action::Tray(action) => Err(Action::Tray(action)),
+            Action::Shell(action) => Err(Action::Shell(action)),
             Action::Reload => Err(Action::Reload),
             Action::Exit => Err(Action::Exit),
         }
@@ -119,6 +123,7 @@ where
             Action::System(action) => write!(f, "Action::System({action:?})"),
             Action::Image(_) => write!(f, "Action::Image"),
             Action::Tray(action) => write!(f, "Action::Tray({action:?})"),
+            Action::Shell(action) => write!(f, "Action::Shell({action:?})"),
             Action::Reload => write!(f, "Action::Reload"),
             Action::Exit => write!(f, "Action::Exit"),
         }

@@ -22,7 +22,7 @@ all-features = true
 maintenance = { status = "actively-developed" }
 
 [features]
-default = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "x11", "wayland", "tray"]
+default = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "x11", "wayland", "tray", "single-instance"]
 # Enables the `wgpu` GPU-accelerated renderer with all its default features (Vulkan, Metal, DX12, OpenGL, and WebGPU)
 wgpu = ["wgpu-bare", "iced_renderer/wgpu"]
 # Enables the `wgpu` GPU-accelerated renderer with the minimum required features (no backends!)
@@ -87,6 +87,8 @@ sipper = ["iced_runtime/sipper"]
 linux-theme-detection = ["iced_winit/linux-theme-detection"]
 # Enables the tray icon (`iced::tray`): StatusNotifierItem over D-Bus on Linux, `tray-icon` on macOS and Windows
 tray = ["iced_winit/tray"]
+# Enables `daemon(..).single_instance(id)`: a second start hands its arguments to the first and ends
+single-instance = ["iced_winit/single-instance"]
 # Enables the Unix X11 backend
 x11 = ["iced_renderer/x11", "iced_winit/x11"]
 # Enables the Unix Wayland backend
@@ -206,6 +208,10 @@ log = "0.4"
 lyon = "1.0"
 lyon_path = "1.0"
 mundy = { version = "0.2", default-features = false }
+interprocess = { version = "2.2", default-features = false }
+# The versions `winit` 0.30 uses
+objc2-app-kit = { version = "0.2.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSRunningApplication"] }
+objc2-foundation = { version = "0.2.2", default-features = false, features = ["std", "NSThread"] }
 # 0.24 builds with Rust 1.88 (0.25 and later ask for 1.90)
 tray-icon = { version = "0.24.2", default-features = false }
 zbus = { version = "5", default-features = false, features = ["async-io"] }

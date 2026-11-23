@@ -28,9 +28,12 @@ pub use winit;
 
 pub mod clipboard;
 pub mod conversion;
+pub mod single_instance;
 pub mod tray;
 
 mod error;
+#[cfg(target_os = "macos")]
+mod platform;
 mod proxy;
 mod window;
 
@@ -78,9 +81,29 @@ where
     let shell_settings = program.shell();
     let window_settings = program.window();
 
-    let event_loop = EventLoop::with_user_event()
-        .build()
-        .expect("Create event loop");
+    // A second start hands its arguments to the first and ends here,
+    // before anything of a window system is touched
+    #[cfg(feature = "single-instance")]
+    if let Some(id) = &shell_settings.single_instance
+        && single_instance::start(id) == single_instance::Start::Forwarded
+    {
+        return Ok(());
+    }
+
+    let event_loop = {
+        #[allow(unused_mut)]
+        let mut builder = EventLoop::with_user_event();
+
+        #[cfg(target_os = "macos")]
+        if let Some(policy) = shell_settings.activation_policy {
+            use winit::platform::macos::EventLoopBuilderExtMacOS;
+
+            let _ = builder
+                .with_activation_policy(platform::activation_policy(policy));
+        }
+
+        builder.build().expect("Create event loop")
+    };
 
     let graphics_settings = settings.clone().into();
     let display_handle = event_loop.owned_display_handle();
@@ -328,6 +351,30 @@ where
                                         self.id.clone(),
                                     )
                                     .with_visible(false);
+
+                                // The activation token of the start that
+                                // asked for this window lets it come to the
+                                // front (Wayland), or ends the "starting"
+                                // feedback of the desktop (X11)
+                                #[cfg(all(
+                                    unix,
+                                    not(any(
+                                        target_os = "macos",
+                                        target_os = "ios",
+                                        target_os = "android"
+                                    ))
+                                ))]
+                                let window_attributes = {
+                                    use winit::platform::startup_notify::WindowAttributesExtStartupNotify;
+
+                                    match single_instance::take_activation_token() {
+                                        Some(token) => window_attributes
+                                            .with_activation_token(
+                                                winit::window::ActivationToken::from_raw(token),
+                                            ),
+                                        None => window_attributes,
+                                    }
+                                };
 
                                 #[cfg(target_arch = "wasm32")]
                                 let window_attributes = {
@@ -1815,6 +1862,12 @@ fn run_action<'a, P, C>(
                 }
             }
         }
+        Action::Shell(action) => match action {
+            runtime::shell::Action::SetActivationPolicy(_policy) => {
+                #[cfg(target_os = "macos")]
+                platform::set_activation_policy(_policy);
+            }
+        },
         Action::Tray(action) => {
             tray.perform(action, |stream| spawn(runtime, stream));
         }

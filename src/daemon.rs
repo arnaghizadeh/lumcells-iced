@@ -164,6 +164,30 @@ impl<P: Program> Daemon<P> {
         self
     }
 
+    /// Makes the [`Daemon`] run once per user under the given identifier (a
+    /// reverse domain name, like `com.example.app`).
+    ///
+    /// A process started while another one runs hands its arguments to
+    /// that one and ends: its `run` returns `Ok(())` at once, without
+    /// booting. The running one receives the arguments through
+    /// [`single_instance::listen`](crate::single_instance::listen).
+    pub fn single_instance(mut self, id: impl Into<String>) -> Self {
+        self.shell.single_instance = Some(id.into());
+        self
+    }
+
+    /// Sets the [`ActivationPolicy`](crate::window::ActivationPolicy) the
+    /// [`Daemon`] starts with on macOS: `Accessory` for a program that lives in
+    /// the tray and should have no Dock icon. See also
+    /// [`window::set_activation_policy`](crate::window::set_activation_policy).
+    pub fn activation_policy(
+        mut self,
+        policy: crate::window::ActivationPolicy,
+    ) -> Self {
+        self.shell.activation_policy = Some(policy);
+        self
+    }
+
     /// Sets the tray icon the [`Daemon`] starts with; see
     /// [`tray`](crate::tray).
     pub fn tray(mut self, tray: crate::tray::Settings) -> Self {

@@ -267,8 +267,8 @@ impl<P: Program + 'static> Emulator<P> {
                     // TODO
                     dbg!(action);
                 }
-                runtime::Action::Tray(_action) => {
-                    // The emulator has no tray
+                runtime::Action::Tray(_) | runtime::Action::Shell(_) => {
+                    // The emulator has no tray and no platform shell
                 }
                 runtime::Action::Exit => {
                     // TODO
