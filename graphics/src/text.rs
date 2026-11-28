@@ -150,7 +150,26 @@ fn with_system_fonts(
     font_system
 }
 
-#[cfg(not(target_os = "android"))]
+/// iOS: the font database knows no directory of iOS either (it looks
+/// where a Linux keeps its fonts). The fonts of the system are in
+/// `/System/Library/Fonts`; in a simulator, under the root of the simulated
+/// system, which the simulator names in `IPHONE_SIMULATOR_ROOT`.
+#[cfg(target_os = "ios")]
+fn with_system_fonts(
+    mut font_system: cosmic_text::FontSystem,
+) -> cosmic_text::FontSystem {
+    let root = std::env::var("IPHONE_SIMULATOR_ROOT").unwrap_or_default();
+    let database = font_system.db_mut();
+
+    database.load_fonts_dir(format!("{root}/System/Library/Fonts"));
+    database.set_sans_serif_family("Helvetica Neue");
+    database.set_serif_family("Times New Roman");
+    database.set_monospace_family("Menlo");
+
+    font_system
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn with_system_fonts(
     font_system: cosmic_text::FontSystem,
 ) -> cosmic_text::FontSystem {

@@ -50,12 +50,23 @@ pub fn window_attributes(
         _ => settings.size,
     };
 
-    attributes = attributes
-        .with_title(title)
-        .with_inner_size(winit::dpi::LogicalSize {
+    attributes = attributes.with_title(title);
+
+    // iOS: a window is the screen. `winit` makes the view of a window the
+    // size it is asked for there, whatever the screen is; asked for
+    // nothing, it makes the view the screen's
+    #[cfg(not(target_os = "ios"))]
+    {
+        attributes = attributes.with_inner_size(winit::dpi::LogicalSize {
             width: size.width * scale_factor,
             height: size.height * scale_factor,
-        })
+        });
+    }
+
+    #[cfg(target_os = "ios")]
+    let _ = scale_factor;
+
+    attributes = attributes
         .with_maximized(settings.maximized)
         .with_fullscreen(
             settings
@@ -251,15 +262,20 @@ pub fn window_event(
             let key = {
                 #[cfg(not(any(
                     target_arch = "wasm32",
-                    target_os = "android"
+                    target_os = "android",
+                    target_os = "ios"
                 )))]
                 {
                     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
                     event.key_without_modifiers()
                 }
 
-                // Android: `winit` has no key without its modifiers there
-                #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+                // Android, iOS: `winit` has no key without its modifiers there
+                #[cfg(any(
+                    target_arch = "wasm32",
+                    target_os = "android",
+                    target_os = "ios"
+                ))]
                 {
                     // TODO: Fix inconsistent API on Wasm
                     event.logical_key.clone()
@@ -267,7 +283,11 @@ pub fn window_event(
             };
 
             let text = {
-                #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+                #[cfg(not(any(
+                    target_arch = "wasm32",
+                    target_os = "android",
+                    target_os = "ios"
+                )))]
                 {
                     use crate::core::SmolStr;
                     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
@@ -275,7 +295,11 @@ pub fn window_event(
                     event.text_with_all_modifiers().map(SmolStr::new)
                 }
 
-                #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+                #[cfg(any(
+                    target_arch = "wasm32",
+                    target_os = "android",
+                    target_os = "ios"
+                ))]
                 {
                     // TODO: Fix inconsistent API on Wasm
                     event.text
