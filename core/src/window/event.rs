@@ -1,5 +1,5 @@
 use crate::time::Instant;
-use crate::{Point, Size};
+use crate::{Padding, Point, Size};
 
 use std::path::PathBuf;
 
@@ -30,6 +30,18 @@ pub enum Event {
 
     /// A window changed its scale factor.
     Rescaled(f32),
+
+    /// The part of a window the system keeps for itself changed: how far
+    /// the status bar, the sensor housing, the rounded corners and the home
+    /// indicator reach in from each edge, in logical pixels. What is laid
+    /// out inside this [`Padding`] is covered by nothing and can be touched.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **iOS:** Produced after [`Opened`](Self::Opened) and whenever the
+    ///   insets change (a rotation). The window itself is the whole screen.
+    /// - **Other platforms:** Not produced.
+    SafeAreaChanged(Padding),
 
     /// A window redraw was requested.
     ///

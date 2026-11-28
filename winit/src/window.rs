@@ -87,6 +87,7 @@ where
                 accessibility: None,
                 preedit: None,
                 ime_state: None,
+                safe_area: Padding::ZERO,
             },
         );
 
@@ -182,6 +183,8 @@ where
     pub accessibility: Option<crate::accessibility::Adapter>,
     preedit: Option<Preedit<P::Renderer>>,
     ime_state: Option<(Rectangle, input_method::Purpose)>,
+    /// What the system keeps of the window, as the program was last told.
+    safe_area: Padding,
 }
 
 impl<P, C> Window<P, C>
@@ -203,6 +206,52 @@ where
 
     pub fn logical_size(&self) -> Size {
         self.state.logical_size()
+    }
+
+    /// The part of the window the system keeps for itself, when it is not
+    /// what the program was last told: the status bar, the sensor housing
+    /// and the home indicator of a phone, in logical pixels.
+    ///
+    /// iOS: `winit` makes the view the whole screen and reports the free
+    /// part as the window's inner position and size
+    #[cfg(target_os = "ios")]
+    pub fn safe_area_changed(&mut self) -> Option<Padding> {
+        let inner = self.raw.inner_position().ok()?;
+        let outer = self.raw.outer_position().ok()?;
+        let inner_size = self.raw.inner_size();
+        let outer_size = self.raw.outer_size();
+        let scale = self.state.scale_factor();
+
+        let left = (inner.x - outer.x).max(0) as f32;
+        let top = (inner.y - outer.y).max(0) as f32;
+        let right =
+            (outer_size.width as f32 - inner_size.width as f32 - left).max(0.0);
+        let bottom =
+            (outer_size.height as f32 - inner_size.height as f32 - top)
+                .max(0.0);
+
+        let safe_area = Padding {
+            top: top / scale,
+            right: right / scale,
+            bottom: bottom / scale,
+            left: left / scale,
+        };
+
+        if safe_area == self.safe_area {
+            return None;
+        }
+
+        self.safe_area = safe_area;
+
+        Some(safe_area)
+    }
+
+    /// The other systems leave the whole window to the program.
+    #[cfg(not(target_os = "ios"))]
+    pub fn safe_area_changed(&mut self) -> Option<Padding> {
+        let _ = self.safe_area;
+
+        None
     }
 
     pub fn request_redraw(&mut self, redraw_request: RedrawRequest) {

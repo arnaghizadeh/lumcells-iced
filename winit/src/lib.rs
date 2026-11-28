@@ -1008,6 +1008,15 @@ async fn run_instance<P>(
                     }),
                 ));
 
+                if let Some(safe_area) = window.safe_area_changed() {
+                    events.push((
+                        id,
+                        core::Event::Window(window::Event::SafeAreaChanged(
+                            safe_area,
+                        )),
+                    ));
+                }
+
                 if clipboard.window_id().is_none() {
                     clipboard = Clipboard::connect(window.raw.clone());
                 }
@@ -1481,6 +1490,21 @@ async fn run_instance<P>(
                                 window.state.modifiers(),
                             ) {
                                 events.push((id, event));
+                            }
+
+                            // A phone was turned: the system's bars are
+                            // at other edges now
+                            if let Some(safe_area) = window.safe_area_changed()
+                            {
+                                events.push((
+                                    id,
+                                    core::Event::Window(
+                                        window::Event::SafeAreaChanged(
+                                            safe_area,
+                                        ),
+                                    ),
+                                ));
+                                window.raw.request_redraw();
                             }
                         }
                     }

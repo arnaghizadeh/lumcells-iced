@@ -319,8 +319,9 @@ pub fn window_event(
             let modified_key = self::key(logical_key);
 
             // Android: `winit` names a key by the character the system's
-            // key map gives it, and the map gives one to enter and to tab
-            #[cfg(target_os = "android")]
+            // key map gives it, and the map gives one to enter and to tab.
+            // iOS: the keyboard's return key arrives as the text "\n"
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             let (key, modified_key) = {
                 let named = |key: keyboard::Key| match &key {
                     keyboard::Key::Character(c) => match c.as_str() {
