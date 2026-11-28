@@ -25,6 +25,9 @@ tray = ["dep:zbus", "dep:png", "dep:tray-icon"]
 accessibility = ["dep:accesskit", "dep:accesskit_winit", "dep:unicode-segmentation"]
 # One instance of the program per user: a second start hands its arguments to the first
 single-instance = ["dep:interprocess"]
+# Android: the activity the library is loaded by (`iced::android::set_app`)
+android-game-activity = ["winit/android-game-activity"]
+android-native-activity = ["winit/android-native-activity"]
 x11 = ["winit/x11", "window_clipboard/x11"]
 # `window::present` on Wayland (xdg-activation for an existing window) talks to the compositor on the connection of `winit`, with the crates `winit` uses
 wayland = ["winit/wayland", "winit/wayland-dlopen", "winit/wayland-csd-adwaita", "window_clipboard/wayland", "dep:wayland-client", "dep:wayland-backend", "dep:wayland-protocols"]

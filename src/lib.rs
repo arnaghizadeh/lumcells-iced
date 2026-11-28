@@ -499,6 +499,7 @@ compile_error!(
 #[cfg(all(
     target_family = "unix",
     not(target_os = "macos"),
+    not(target_os = "android"),
     not(feature = "wayland"),
     not(feature = "x11"),
 ))]
@@ -515,6 +516,12 @@ pub use iced_highlighter as highlighter;
 pub use iced_renderer::wgpu::wgpu;
 
 mod error;
+
+#[cfg(target_os = "android")]
+pub mod android {
+    //! Android: the activity the program runs in.
+    pub use crate::shell::android::{AndroidApp, activity, app, set_app};
+}
 
 pub mod application;
 pub mod daemon;

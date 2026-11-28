@@ -28,6 +28,8 @@ pub use winit;
 
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 pub mod accessibility;
+#[cfg(target_os = "android")]
+pub mod android;
 pub mod clipboard;
 pub mod conversion;
 pub mod look;
@@ -120,6 +122,17 @@ where
             if !shell_settings.activate_at_start {
                 let _ = builder.with_activate_ignoring_other_apps(false);
             }
+        }
+
+        // Android gives the program its activity in `android_main`; the
+        // event loop is built on it
+        #[cfg(target_os = "android")]
+        {
+            use winit::platform::android::EventLoopBuilderExtAndroid;
+
+            let _ = builder.with_android_app(android::app().expect(
+                "iced::android::set_app is called in android_main, before run",
+            ));
         }
 
         builder.build().expect("Create event loop")
@@ -233,6 +246,12 @@ where
         /// What is done once, when the event loop runs.
         on_start: Option<Box<dyn FnOnce()>>,
 
+        /// Android: what happened before the activity had a surface to
+        /// draw on. A window is made, and its graphics with it, once the
+        /// system says `resumed` for the first time.
+        #[cfg(target_os = "android")]
+        held: Option<Vec<Event<Action<Message>>>>,
+
         /// Makes the event loop turn and redraw; given to the
         /// accessibility of each window.
         #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -251,6 +270,8 @@ where
         error: None,
         system_theme: Some(system_theme_sender),
         on_start: Some(on_start),
+        #[cfg(target_os = "android")]
+        held: Some(Vec::new()),
 
         #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
         wake: {
@@ -286,6 +307,14 @@ where
 
             if let Some(on_start) = self.on_start.take() {
                 on_start();
+            }
+
+            // The activity has its surface: what waited for it happens now
+            #[cfg(target_os = "android")]
+            if let Some(held) = self.held.take() {
+                for event in held {
+                    self.process_event(event_loop, event);
+                }
             }
         }
 
@@ -375,6 +404,12 @@ where
             event: Event<Action<Message>>,
         ) {
             if event_loop.exiting() {
+                return;
+            }
+
+            #[cfg(target_os = "android")]
+            if let Some(held) = &mut self.held {
+                held.push(event);
                 return;
             }
 

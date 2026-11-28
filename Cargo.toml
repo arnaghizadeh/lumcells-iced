@@ -94,6 +94,10 @@ accessibility = ["iced_winit/accessibility"]
 # Enables `daemon(..).single_instance(id)`: a second start hands its arguments to the first and ends
 single-instance = ["iced_winit/single-instance"]
 # Enables the Unix X11 backend
+# Android: the program is a library loaded by a `GameActivity` (androidx.games)
+android-game-activity = ["iced_winit/android-game-activity"]
+# Android: the program is a library loaded by a `NativeActivity`
+android-native-activity = ["iced_winit/android-native-activity"]
 x11 = ["iced_renderer/x11", "iced_winit/x11"]
 # Enables the Unix Wayland backend
 wayland = ["iced_renderer/wayland", "iced_winit/wayland"]

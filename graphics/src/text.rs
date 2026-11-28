@@ -118,7 +118,7 @@ pub fn font_system() -> &'static RwLock<FontSystem> {
 
     FONT_SYSTEM.get_or_init(|| {
         RwLock::new(FontSystem {
-            raw: cosmic_text::FontSystem::new_with_fonts([
+            raw: with_system_fonts(cosmic_text::FontSystem::new_with_fonts([
                 cosmic_text::fontdb::Source::Binary(Arc::new(
                     include_bytes!("../fonts/Iced-Icons.ttf").as_slice(),
                 )),
@@ -126,11 +126,35 @@ pub fn font_system() -> &'static RwLock<FontSystem> {
                 cosmic_text::fontdb::Source::Binary(Arc::new(
                     include_bytes!("../fonts/FiraSans-Regular.ttf").as_slice(),
                 )),
-            ]),
+            ])),
             loaded_fonts: HashSet::new(),
             version: Version::default(),
         })
     })
+}
+
+/// Android: the font database finds no system font by itself there (it
+/// knows no directory of Android), and no text is drawn without one. The
+/// fonts of the system are in `/system/fonts`; its sans-serif is Roboto.
+#[cfg(target_os = "android")]
+fn with_system_fonts(
+    mut font_system: cosmic_text::FontSystem,
+) -> cosmic_text::FontSystem {
+    let database = font_system.db_mut();
+
+    database.load_fonts_dir("/system/fonts");
+    database.set_sans_serif_family("Roboto");
+    database.set_serif_family("Noto Serif");
+    database.set_monospace_family("Droid Sans Mono");
+
+    font_system
+}
+
+#[cfg(not(target_os = "android"))]
+fn with_system_fonts(
+    font_system: cosmic_text::FontSystem,
+) -> cosmic_text::FontSystem {
+    font_system
 }
 
 /// A set of system fonts.
