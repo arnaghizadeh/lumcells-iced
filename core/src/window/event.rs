@@ -40,8 +40,24 @@ pub enum Event {
     ///
     /// - **iOS:** Produced after [`Opened`](Self::Opened) and whenever the
     ///   insets change (a rotation). The window itself is the whole screen.
+    /// - **Android:** Produced when the program's shell has said the
+    ///   window's insets (`iced::android::insets`: the status bar, the
+    ///   navigation bar, the display cutout) and whenever they change.
     /// - **Other platforms:** Not produced.
     SafeAreaChanged(Padding),
+
+    /// The system's on-screen keyboard covers another part of a window:
+    /// its height from the window's bottom edge, in logical pixels; `0.0`
+    /// when it is closed. The window keeps its size. The height includes
+    /// what [`SafeAreaChanged`](Self::SafeAreaChanged) says of the bottom
+    /// edge: the keyboard stands on the edge, not on the navigation bar.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **Android:** Produced when the program's shell has said the
+    ///   keyboard's inset (`iced::android::insets`) and whenever it changes.
+    /// - **Other platforms:** Not produced.
+    KeyboardChanged(f32),
 
     /// A window redraw was requested.
     ///

@@ -88,6 +88,7 @@ where
                 preedit: None,
                 ime_state: None,
                 safe_area: Padding::ZERO,
+                keyboard: 0.0,
             },
         );
 
@@ -185,6 +186,8 @@ where
     ime_state: Option<(Rectangle, input_method::Purpose)>,
     /// What the system keeps of the window, as the program was last told.
     safe_area: Padding,
+    /// The height of the on-screen keyboard, as the program was last told.
+    keyboard: f32,
 }
 
 impl<P, C> Window<P, C>
@@ -246,10 +249,61 @@ where
         Some(safe_area)
     }
 
+    /// Android: the window is the whole screen too; the program's shell
+    /// reads the view's window insets and says them
+    /// ([`crate::android::insets`])
+    #[cfg(target_os = "android")]
+    pub fn safe_area_changed(&mut self) -> Option<Padding> {
+        let insets = crate::android::current_insets()?;
+        let scale = self.state.scale_factor();
+
+        let safe_area = Padding {
+            top: insets.top.max(0.0) / scale,
+            right: insets.right.max(0.0) / scale,
+            bottom: insets.bottom.max(0.0) / scale,
+            left: insets.left.max(0.0) / scale,
+        };
+
+        if safe_area == self.safe_area {
+            return None;
+        }
+
+        self.safe_area = safe_area;
+
+        Some(safe_area)
+    }
+
     /// The other systems leave the whole window to the program.
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     pub fn safe_area_changed(&mut self) -> Option<Padding> {
         let _ = self.safe_area;
+
+        None
+    }
+
+    /// The height of the on-screen keyboard over the window's bottom edge,
+    /// in logical pixels, when it is not what the program was last told.
+    ///
+    /// Android: as the program's shell said it
+    /// ([`crate::android::insets`])
+    #[cfg(target_os = "android")]
+    pub fn keyboard_changed(&mut self) -> Option<f32> {
+        let insets = crate::android::current_insets()?;
+        let keyboard = insets.keyboard.max(0.0) / self.state.scale_factor();
+
+        if keyboard == self.keyboard {
+            return None;
+        }
+
+        self.keyboard = keyboard;
+
+        Some(keyboard)
+    }
+
+    /// The other systems do not say the keyboard's height (yet: iOS).
+    #[cfg(not(target_os = "android"))]
+    pub fn keyboard_changed(&mut self) -> Option<f32> {
+        let _ = self.keyboard;
 
         None
     }

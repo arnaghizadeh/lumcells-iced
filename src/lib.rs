@@ -522,7 +522,8 @@ mod error;
 pub mod android {
     //! Android: the activity the program runs in.
     pub use crate::shell::android::{
-        AndroidApp, TextInput, activity, app, set_app, text_input,
+        AndroidApp, Insets, TextInput, activity, app, insets, set_app,
+        text_input,
     };
 }
 

@@ -1017,6 +1017,15 @@ async fn run_instance<P>(
                     ));
                 }
 
+                if let Some(keyboard) = window.keyboard_changed() {
+                    events.push((
+                        id,
+                        core::Event::Window(window::Event::KeyboardChanged(
+                            keyboard,
+                        )),
+                    ));
+                }
+
                 if clipboard.window_id().is_none() {
                     clipboard = Clipboard::connect(window.raw.clone());
                 }
@@ -1544,12 +1553,38 @@ async fn run_instance<P>(
                         }
 
                         // Android: what the shell caught of the keyboard,
-                        // as the input method's events
+                        // as the input method's events; and the insets it
+                        // read (the system's bars, the keyboard's height)
                         #[cfg(target_os = "android")]
-                        if let Some((id, _window)) =
+                        if let Some((id, window)) =
                             window_manager.iter_mut().next()
                         {
                             use core::input_method;
+
+                            if let Some(safe_area) = window.safe_area_changed()
+                            {
+                                events.push((
+                                    id,
+                                    core::Event::Window(
+                                        window::Event::SafeAreaChanged(
+                                            safe_area,
+                                        ),
+                                    ),
+                                ));
+                                window.raw.request_redraw();
+                            }
+
+                            if let Some(keyboard) = window.keyboard_changed() {
+                                events.push((
+                                    id,
+                                    core::Event::Window(
+                                        window::Event::KeyboardChanged(
+                                            keyboard,
+                                        ),
+                                    ),
+                                ));
+                                window.raw.request_redraw();
+                            }
 
                             for typed in android::typed() {
                                 let event = match typed {
