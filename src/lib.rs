@@ -521,7 +521,9 @@ mod error;
 #[cfg(target_os = "android")]
 pub mod android {
     //! Android: the activity the program runs in.
-    pub use crate::shell::android::{AndroidApp, activity, app, set_app};
+    pub use crate::shell::android::{
+        AndroidApp, TextInput, activity, app, set_app, text_input,
+    };
 }
 
 pub mod application;

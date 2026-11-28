@@ -315,7 +315,26 @@ where
                 for event in held {
                     self.process_event(event_loop, event);
                 }
+            } else {
+                // The program is on the screen again, with a new surface
+                self.process_event(
+                    event_loop,
+                    Event::EventLoopAwakened(winit::event::Event::Resumed),
+                );
             }
+        }
+
+        // Android takes the surface when the program leaves the screen.
+        // What is drawn on it is let go before this returns
+        #[cfg(target_os = "android")]
+        fn suspended(
+            &mut self,
+            event_loop: &winit::event_loop::ActiveEventLoop,
+        ) {
+            self.process_event(
+                event_loop,
+                Event::EventLoopAwakened(winit::event::Event::Suspended),
+            );
         }
 
         fn new_events(
@@ -802,6 +821,18 @@ async fn run_instance<P>(
     #[cfg(target_os = "macos")]
     let mut has_windows = false;
 
+    // Android: what the shell hands over of the keyboard makes the loop turn
+    #[cfg(target_os = "android")]
+    android::set_wake({
+        let proxy = proxy.clone();
+
+        Box::new(move || {
+            proxy.send_action(Action::Window(
+                runtime::window::Action::RedrawAll,
+            ));
+        })
+    });
+
     'next_event: loop {
         #[cfg(target_os = "macos")]
         if shell_settings.dock_follows_windows
@@ -1071,6 +1102,12 @@ async fn run_instance<P>(
                             continue;
                         }
 
+                        // Android: nothing to draw on while the program
+                        // is not on the screen
+                        if window.surface.is_none() {
+                            continue;
+                        }
+
                         // Window was resized between redraws
                         if window.surface_version
                             != window.state.surface_version()
@@ -1086,11 +1123,13 @@ async fn run_instance<P>(
                             );
                             layout_span.finish();
 
-                            current_compositor.configure_surface(
-                                &mut window.surface,
-                                physical_size.width,
-                                physical_size.height,
-                            );
+                            if let Some(surface) = &mut window.surface {
+                                current_compositor.configure_surface(
+                                    surface,
+                                    physical_size.width,
+                                    physical_size.height,
+                                );
+                            }
 
                             window.surface_version =
                                 window.state.surface_version();
@@ -1287,9 +1326,13 @@ async fn run_instance<P>(
                         window.draw_preedit();
 
                         let present_span = debug::present(id);
+                        let Some(surface) = &mut window.surface else {
+                            continue;
+                        };
+
                         match current_compositor.present(
                             &mut window.renderer,
-                            &mut window.surface,
+                            surface,
                             window.state.viewport(),
                             window.state.background_color(),
                             || window.raw.pre_present_notify(),
@@ -1311,15 +1354,18 @@ async fn run_instance<P>(
                                         window.state.physical_size();
 
                                     if error == compositor::SurfaceError::Lost {
-                                        window.surface = current_compositor
-                                            .create_surface(
+                                        window.surface = Some(
+                                            current_compositor.create_surface(
                                                 window.raw.clone(),
                                                 physical_size.width,
                                                 physical_size.height,
-                                            );
-                                    } else {
+                                            ),
+                                        );
+                                    } else if let Some(surface) =
+                                        &mut window.surface
+                                    {
                                         current_compositor.configure_surface(
-                                            &mut window.surface,
+                                            surface,
                                             physical_size.width,
                                             physical_size.height,
                                         );
@@ -1438,10 +1484,64 @@ async fn run_instance<P>(
                             }
                         }
                     }
+                    // Android took the surface (the program left the
+                    // screen): what is drawn on it is let go now, before
+                    // the system destroys it
+                    #[cfg(target_os = "android")]
+                    event::Event::Suspended => {
+                        for (_id, window) in window_manager.iter_mut() {
+                            window.surface = None;
+                        }
+                    }
+                    // Android gave a new surface: the windows are drawn
+                    // on it from now on
+                    #[cfg(target_os = "android")]
+                    event::Event::Resumed => {
+                        let Some(compositor) = compositor.as_mut() else {
+                            continue;
+                        };
+
+                        for (_id, window) in window_manager.iter_mut() {
+                            let size = window.state.physical_size();
+
+                            window.surface = None;
+                            window.surface = Some(compositor.create_surface(
+                                window.raw.clone(),
+                                size.width,
+                                size.height,
+                            ));
+                            window.raw.request_redraw();
+                        }
+                    }
                     event::Event::AboutToWait => {
                         if actions > 0 {
                             proxy.free_slots(actions);
                             actions = 0;
+                        }
+
+                        // Android: what the shell caught of the keyboard,
+                        // as the input method's events
+                        #[cfg(target_os = "android")]
+                        if let Some((id, _window)) =
+                            window_manager.iter_mut().next()
+                        {
+                            use core::input_method;
+
+                            for typed in android::typed() {
+                                let event = match typed {
+                                    android::TextInput::Commit(text) => {
+                                        input_method::Event::Commit(text)
+                                    }
+                                    android::TextInput::Preedit(text) => {
+                                        input_method::Event::Preedit(text, None)
+                                    }
+                                };
+
+                                events.push((
+                                    id,
+                                    core::Event::InputMethod(event),
+                                ));
+                            }
                         }
 
                         // What assistive technology asked for

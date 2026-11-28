@@ -317,6 +317,24 @@ pub fn window_event(
 
             let key = self::key(key);
             let modified_key = self::key(logical_key);
+
+            // Android: `winit` names a key by the character the system's
+            // key map gives it, and the map gives one to enter and to tab
+            #[cfg(target_os = "android")]
+            let (key, modified_key) = {
+                let named = |key: keyboard::Key| match &key {
+                    keyboard::Key::Character(c) => match c.as_str() {
+                        "\n" | "\r" => {
+                            keyboard::Key::Named(keyboard::key::Named::Enter)
+                        }
+                        "\t" => keyboard::Key::Named(keyboard::key::Named::Tab),
+                        _ => key,
+                    },
+                    _ => key,
+                };
+
+                (named(key), named(modified_key))
+            };
             let physical_key = self::physical_key(physical_key);
             let modifiers = self::modifiers(modifiers);
 
